@@ -181,20 +181,27 @@ def _external_database_url():
 
 _EXTERNAL_URL = _external_database_url()
 
+class DatabaseConnectionError(RuntimeError):
+    """A safe deployment message that never exposes the connection string."""
+
 def database_status():
     return "PostgreSQL (persistent deployment database)" if _EXTERNAL_URL else "Local SQLite (persistent only on this computer)"
 
 if _EXTERNAL_URL:
     from sqlalchemy import create_engine, text
+    from sqlalchemy.exc import OperationalError
     _url = _EXTERNAL_URL.replace("postgresql://", "postgresql+psycopg://", 1).replace("postgres://", "postgresql+psycopg://", 1)
-    _ENGINE = create_engine(_url, pool_pre_ping=True)
+    _ENGINE = create_engine(_url, pool_pre_ping=True, pool_size=1, max_overflow=1, connect_args={"sslmode": "require"})
 
     def init_database():
-        with _ENGINE.begin() as conn:
-            conn.execute(text("CREATE TABLE IF NOT EXISTS uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, sales_filename TEXT, cancel_filename TEXT, row_count INTEGER)"))
-            conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_transactions (batch_id TEXT, outlet TEXT, invoice TEXT, date TEXT, order_source TEXT, item_name TEXT, quantity DOUBLE PRECISION, unit TEXT, net_sales DOUBLE PRECISION, category TEXT, customer_name TEXT, customer_phone TEXT, status TEXT, hour DOUBLE PRECISION, handler TEXT, weekday TEXT, month TEXT, week_number INTEGER, sales_impact DOUBLE PRECISION, quantity_impact DOUBLE PRECISION)"))
-            conn.execute(text("CREATE TABLE IF NOT EXISTS dispatch_uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, filename TEXT, row_count INTEGER)"))
-            conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered DOUBLE PRECISION, weekday TEXT, week_start TEXT)"))
+        try:
+            with _ENGINE.begin() as conn:
+                conn.execute(text("CREATE TABLE IF NOT EXISTS uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, sales_filename TEXT, cancel_filename TEXT, row_count INTEGER)"))
+                conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_transactions (batch_id TEXT, outlet TEXT, invoice TEXT, date TEXT, order_source TEXT, item_name TEXT, quantity DOUBLE PRECISION, unit TEXT, net_sales DOUBLE PRECISION, category TEXT, customer_name TEXT, customer_phone TEXT, status TEXT, hour DOUBLE PRECISION, handler TEXT, weekday TEXT, month TEXT, week_number INTEGER, sales_impact DOUBLE PRECISION, quantity_impact DOUBLE PRECISION)"))
+                conn.execute(text("CREATE TABLE IF NOT EXISTS dispatch_uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, filename TEXT, row_count INTEGER)"))
+                conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered DOUBLE PRECISION, weekday TEXT, week_start TEXT)"))
+        except OperationalError:
+            raise DatabaseConnectionError("Unable to connect to the hosted database. In Supabase, copy Connect > Session pooler (port 5432), use the postgres.PROJECT_REF username, and add ?sslmode=require. Check that the database is not paused and that the password is URL-encoded.") from None
 
     def save_batch(data, sales_upload, cancel_upload):
         init_database(); batch_id = hashlib.sha256(sales_upload.getvalue() + cancel_upload.getvalue()).hexdigest()[:16]
@@ -229,4 +236,5 @@ if _EXTERNAL_URL:
         with _ENGINE.connect() as conn: data = pd.read_sql(text("SELECT * FROM cleaned_dispatch"), conn)
         if not data.empty: data["transfer_date"] = pd.to_datetime(data["transfer_date"]); data["week_start"] = pd.to_datetime(data["week_start"])
         return data
+
 

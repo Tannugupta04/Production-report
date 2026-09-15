@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-from cleaning import clean_uploads, load_data, save_batch, upload_summary, clean_dispatch_upload, save_dispatch_batch, load_dispatch_data
+from cleaning import clean_uploads, load_data, save_batch, upload_summary, clean_dispatch_upload, save_dispatch_batch, load_dispatch_data, DatabaseConnectionError
 
 st.set_page_config(page_title="Weekly Itemwise Sales", page_icon="Sales", layout="wide")
 WEEKDAYS=list(calendar.day_name)
@@ -145,9 +145,9 @@ def production_page():
     st.download_button("Download Monday-Sunday pattern (+10%)",output,"monday_sunday_production_pattern_plus_10.xlsx","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 page=st.sidebar.radio("Page",["Sales dashboard","Dispatch & production"])
-if page=="Sales dashboard": sales_page()
-else: production_page()
-
-
-
-
+try:
+    if page=="Sales dashboard": sales_page()
+    else: production_page()
+except DatabaseConnectionError as error:
+    st.error(str(error))
+    st.info("Your existing local data remains safe. Correct the Streamlit DATABASE_URL Secret, save it, and reboot the app.")
