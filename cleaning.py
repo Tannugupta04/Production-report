@@ -200,8 +200,19 @@ if _EXTERNAL_URL:
                 conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_transactions (batch_id TEXT, outlet TEXT, invoice TEXT, date TEXT, order_source TEXT, item_name TEXT, quantity DOUBLE PRECISION, unit TEXT, net_sales DOUBLE PRECISION, category TEXT, customer_name TEXT, customer_phone TEXT, status TEXT, hour DOUBLE PRECISION, handler TEXT, weekday TEXT, month TEXT, week_number INTEGER, sales_impact DOUBLE PRECISION, quantity_impact DOUBLE PRECISION)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dispatch_uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, filename TEXT, row_count INTEGER)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered DOUBLE PRECISION, weekday TEXT, week_start TEXT)"))
-        except OperationalError:
-            raise DatabaseConnectionError("Unable to connect to the hosted database. In Supabase, copy Connect > Session pooler (port 5432), use the postgres.PROJECT_REF username, and add ?sslmode=require. Check that the database is not paused and that the password is URL-encoded.") from None
+except OperationalError as error:
+            provider_message = str(error).lower()
+            if "password authentication failed" in provider_message:
+                reason = "Supabase rejected the database password. Reset or re-enter the database password, then URL-encode any special characters."
+            elif "could not translate host name" in provider_message or "name or service not known" in provider_message:
+                reason = "The pooler host is incorrect. Copy it again from Supabase Connect > Session pooler."
+            elif "connection refused" in provider_message or "timeout" in provider_message:
+                reason = "The database is unavailable or paused. Confirm the Supabase project is Active and use the Session pooler on port 5432."
+            elif "network is unreachable" in provider_message:
+                reason = "The direct database endpoint is unreachable. Use the IPv4 Session pooler host ending in .pooler.supabase.com."
+            else:
+                reason = "Confirm Session pooler port 5432, username postgres.PROJECT_REF, sslmode=require, an active project, and a URL-encoded password."
+            raise DatabaseConnectionError(f"Unable to connect to the hosted database. {reason}") from None
 
     def save_batch(data, sales_upload, cancel_upload):
         init_database(); batch_id = hashlib.sha256(sales_upload.getvalue() + cancel_upload.getvalue()).hexdigest()[:16]
@@ -236,5 +247,6 @@ if _EXTERNAL_URL:
         with _ENGINE.connect() as conn: data = pd.read_sql(text("SELECT * FROM cleaned_dispatch"), conn)
         if not data.empty: data["transfer_date"] = pd.to_datetime(data["transfer_date"]); data["week_start"] = pd.to_datetime(data["week_start"])
         return data
+
 
 
