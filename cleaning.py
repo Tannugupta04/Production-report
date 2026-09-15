@@ -200,7 +200,7 @@ if _EXTERNAL_URL:
                 conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_transactions (batch_id TEXT, outlet TEXT, invoice TEXT, date TEXT, order_source TEXT, item_name TEXT, quantity DOUBLE PRECISION, unit TEXT, net_sales DOUBLE PRECISION, category TEXT, customer_name TEXT, customer_phone TEXT, status TEXT, hour DOUBLE PRECISION, handler TEXT, weekday TEXT, month TEXT, week_number INTEGER, sales_impact DOUBLE PRECISION, quantity_impact DOUBLE PRECISION)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dispatch_uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, filename TEXT, row_count INTEGER)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered DOUBLE PRECISION, weekday TEXT, week_start TEXT)"))
-except OperationalError as error:
+        except OperationalError as error:
             provider_message = str(error).lower()
             if "password authentication failed" in provider_message:
                 reason = "Supabase rejected the database password. Reset or re-enter the database password, then URL-encode any special characters."
@@ -247,6 +247,7 @@ except OperationalError as error:
         with _ENGINE.connect() as conn: data = pd.read_sql(text("SELECT * FROM cleaned_dispatch"), conn)
         if not data.empty: data["transfer_date"] = pd.to_datetime(data["transfer_date"]); data["week_start"] = pd.to_datetime(data["week_start"])
         return data
+
 
 
 
