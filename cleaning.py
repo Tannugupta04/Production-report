@@ -186,7 +186,7 @@ def database_status():
 
 if _EXTERNAL_URL:
     from sqlalchemy import create_engine, text
-    _url = _EXTERNAL_URL.replace("postgres://", "postgresql+psycopg://", 1)
+    _url = _EXTERNAL_URL.replace("postgresql://", "postgresql+psycopg://", 1).replace("postgres://", "postgresql+psycopg://", 1)
     _ENGINE = create_engine(_url, pool_pre_ping=True)
 
     def init_database():
@@ -229,3 +229,4 @@ if _EXTERNAL_URL:
         with _ENGINE.connect() as conn: data = pd.read_sql(text("SELECT * FROM cleaned_dispatch"), conn)
         if not data.empty: data["transfer_date"] = pd.to_datetime(data["transfer_date"]); data["week_start"] = pd.to_datetime(data["week_start"])
         return data
+
