@@ -91,7 +91,7 @@ def sales_page():
     filtered=scope[scope.status.isin(statuses)].copy()
     if handlers: filtered=filtered[filtered.handler.isin(handlers)]
     if filtered.empty: st.warning("No data matches these filters."); return
-    selected=st.radio("Measure",["Quantity","Sales (INR)"],horizontal=True); metric,title=("quantity_impact","Quantity") if selected=="Quantity" else ("sales_impact","Sales (INR)")
+    selected=st.radio("Measure",["Quantity","Sales (INR)"],horizontal=True); metric,title=("analysis_quantity","Quantity") if selected=="Quantity" else ("display_sales","Sales (INR)")
     all_dates=scope.date.dt.date.drop_duplicates(); total_days=len(all_dates); completed=filtered[filtered.status.eq("Completed")]; cancelled=filtered[filtered.status.eq("Cancelled")]
     a,b,c,d=st.columns(4); a.metric(f"Average daily {title}",f"{filtered[metric].sum()/total_days:,.2f}"); b.metric(f"Average completed {title}",f"{completed[metric].sum()/total_days:,.2f}"); c.metric("Average cancelled value",f"{cancelled[metric].abs().sum()/total_days:,.2f}"); d.metric("Business days included",f"{total_days:,}")
     st.subheader("Overall average per business day")
@@ -151,3 +151,5 @@ try:
 except DatabaseConnectionError as error:
     st.error(str(error))
     st.info("Your existing local data remains safe. Correct the Streamlit DATABASE_URL Secret, save it, and reboot the app.")
+
+

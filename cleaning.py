@@ -108,6 +108,7 @@ def clean_uploads(sales_upload, cancel_upload) -> pd.DataFrame:
     large = {"Chicken Korma (Large (800 gms))", "Butter Chicken (Large (900 gms))", "Paneer Zaika (Large (800 gms))", "Dal Makhani (Large (560 gms))", "Mutton Korma (Large (800 gms))", "Mutton Nihari (Large (740 gms))", "Mutton Haleem (Large (500 gms))", "Soya Tawa Masala (Large (940 gms))"}
     data.loc[normalise_names(data["item_name"]).isin(large), "quantity"] *= 2
     data["outlet"] = data["outlet"].replace({"NDL": "CP", "CP-67": "CP67"})
+    data["source_item_name"] = data["item_name"].astype(str).str.strip()
     data["item_name"] = normalise_names(data["item_name"])
     data["unit"] = data["unit"].fillna("units").astype(str).str.strip().replace({"ea": "units", "EA": "units", "piece": "pieces", "Piece": "pieces"})
     data["handler"] = _handler(data)
@@ -145,6 +146,7 @@ def clean_dispatch_upload(uploaded_file) -> pd.DataFrame:
     missing = [column for column in required if column not in raw.columns]
     if missing: raise ValueError(f"Dispatch file is missing: {', '.join(missing)}")
     data = raw[required].rename(columns={"Item Name": "item_name", "Quantity Delivered": "quantity_delivered", "Transfer Date": "transfer_date"}).copy()
+    data["source_item_name"] = data["item_name"].astype(str).str.strip()
     data["item_name"] = normalise_names(data["item_name"]); data["quantity_delivered"] = pd.to_numeric(data["quantity_delivered"], errors="coerce"); data["transfer_date"] = pd.to_datetime(data["transfer_date"], errors="coerce").dt.normalize()
     data = data.dropna().loc[lambda frame: frame["quantity_delivered"].gt(0)].copy(); data["weekday"] = data["transfer_date"].dt.day_name(); data["week_start"] = data["transfer_date"] - pd.to_timedelta(data["transfer_date"].dt.dayofweek, unit="D")
     return data.reset_index(drop=True)
@@ -250,4 +252,59 @@ if _EXTERNAL_URL:
 
 
 
+
+
+
+# Clean production units. Raw exported quantity stays unchanged; analysis_quantity
+# is the quantity used in the dashboard and reflects the business rules.
+_TIKKA_ITEMS = {"Chicken Malai Tikka", "Chicken Peri Peri Tikka", "Chicken Spicy Tikka", "Chicken Tikka", "Fish Tikka", "Soya Achari", "Soya Tikka", "Paneer Tikka"}
+_KEBAB_ITEMS = {"Chicken Seekh Kebab", "Mutton Kakori Kebab", "Mutton Seekh Kebab", "Veg Haryali Kebab"}
+_PLATE_PATTERN = r"Biryani|Butter Chicken|Dal Makhani|Soya Tawa Masala|Paneer Zaika|Chicken Korma|Mutton Nihari|Mutton Haleem|Mutton Korma|Chicken Tikka Masala|Mutton Seekh Masala|Mutton Kakori Masala|Shahi Tukda|Phirni"
+
+def apply_production_measurements(data):
+    result = data.copy()
+    names = result["item_name"].astype(str).str.strip()
+    source = result.get("source_item_name", names).astype(str)
+    factor = pd.Series(1.0, index=result.index)
+    unit = pd.Series("units", index=result.index, dtype="object")
+    tikka = names.isin(_TIKKA_ITEMS)
+    kebab = names.isin(_KEBAB_ITEMS) | names.str.contains(r"Junior.*(Kebab|Kakori|Seekh)", case=False, regex=True, na=False)
+    junior = source.str.contains(r"\bJunior\b", case=False, na=False)
+    nine_piece = source.str.contains(r"\b0?9\s*Pcs\b", case=False, regex=True, na=False)
+    four_piece = source.str.contains(r"\b4\s*Pcs\b", case=False, regex=True, na=False) & ~names.eq("Butter Chicken")
+    unit.loc[tikka] = "pieces"; factor.loc[tikka] = 6
+    factor.loc[tikka & junior] = 3; factor.loc[tikka & nine_piece] = 9; factor.loc[tikka & four_piece] = 4
+    unit.loc[kebab] = "kg"; factor.loc[kebab] = 0.180; factor.loc[kebab & junior] = 0.090
+    coke_pepsi = names.str.contains(r"Coke|Pepsi", case=False, regex=True, na=False)
+    water = names.str.contains(r"Water|Vedica|Bisleri", case=False, regex=True, na=False)
+    beverages = names.str.contains(r"Sprite|Fanta|Limca|Thums Up|Red Bull|Ice Tea|Ginger Ale|Shikanji|Aam|Drink", case=False, regex=True, na=False)
+    plates = names.str.contains(_PLATE_PATTERN, case=False, regex=True, na=False)
+    unit.loc[coke_pepsi] = "cans"; unit.loc[water | beverages] = "bottles"; unit.loc[plates] = "plates"
+    calculated = pd.to_numeric(result["quantity"], errors="coerce").fillna(0).abs() * factor
+    existing = pd.to_numeric(result.get("analysis_quantity", pd.Series(float("nan"), index=result.index)), errors="coerce")
+    result["analysis_quantity"] = existing.where(existing.notna(), calculated)
+    result["unit"] = unit
+    return result.drop(columns=["source_item_name"], errors="ignore")
+
+_base_init_database = init_database
+_base_clean_uploads = clean_uploads
+_base_load_data = load_data
+
+def init_database():
+    _base_init_database()
+    if _EXTERNAL_URL:
+        with _ENGINE.begin() as conn:
+            conn.execute(text("ALTER TABLE cleaned_transactions ADD COLUMN IF NOT EXISTS analysis_quantity DOUBLE PRECISION"))
+    else:
+        with _connect() as conn:
+            try:
+                conn.execute("ALTER TABLE cleaned_transactions ADD COLUMN analysis_quantity REAL")
+            except sqlite3.OperationalError:
+                pass
+
+def clean_uploads(sales_upload, cancel_upload):
+    return apply_production_measurements(_base_clean_uploads(sales_upload, cancel_upload))
+
+def load_data():
+    return apply_production_measurements(_base_load_data())
 
