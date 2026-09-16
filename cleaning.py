@@ -1,8 +1,9 @@
-﻿"""Cleaning and SQLite storage helpers for the dashboard."""
+"""Cleaning and SQLite storage helpers for the dashboard."""
 from __future__ import annotations
 
 import hashlib
 import io
+import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,7 +24,11 @@ ALIASES = {
     "Butter Chicken (Large (900 gms))": "Butter Chicken", "Butter Chicken (Regular (450 gms))": "Butter Chicken", "Dal Makhni": "Dal Makhani", "Dal Makhani (Large (560 gms))": "Dal Makhani", "Dal Makhani (Regular (280 gms))": "Dal Makhani",
     "Chicken Korma (Large (800 gms))": "Chicken Korma", "Chicken Korma (Regular (400 gms))": "Chicken Korma", "Mutton Nihari (Large (740 gms))": "Mutton Nihari", "Mutton Nihari (Regular (370 gms))": "Mutton Nihari", "Mutton Korma (Large (800 gms))": "Mutton Korma", "Mutton Korma (Regular (400 gms))": "Mutton Korma", "Mutton Haleem (Large (500 gms))": "Mutton Haleem", "Mutton Haleem (Regular (250 gms))": "Mutton Haleem",
     "Soya Tawa Masala (Large (940 gms))": "Soya Tawa Masala", "Soya Tawa Masala (Regular (470 gms))": "Soya Tawa Masala", "Taftan": "Taftaan", "Gulab Jamun 1 Pc": "Gulab Jamun", "Bisleri Vedica @60": "Water Bottle", "Purani Dilli Achari Biryani Non Veg": "Non-Veg achari biryani", "Purani Dilli Achari Biryani Veg": "Veg achari biryani", "Veg Achari Biryani": "Veg achari biryani",
-}
+    "Chicken Malai Tikka (3 Pcs)": "Chicken Malai Tikka", "Chicken Peri Peri Tikka (3 Pcs)": "Chicken Peri Peri Tikka", "Chicken Spicy Tikka (3 Pcs)": "Chicken Spicy Tikka", "Chicken Tikka (3 Pcs)": "Chicken Tikka", "Fish Tikka (3 Pcs)": "Fish Tikka", "Soya Tikka (3 Pcs)": "Soya Tikka", "Paneer Tikka (3 Pcs)": "Paneer Tikka",
+    "Junior Chicken Malai Tikka Roll": "Chicken Malai Tikka", "Junior Chicken Peri Peri Tikka Roll": "Chicken Peri Peri Tikka", "Junior Chicken Spicy Tikka Roll": "Chicken Spicy Tikka", "Junior Chicken Tikka Roll": "Chicken Tikka", "Junior Fish Tikka Roll": "Fish Tikka", "Junior Soya Achari Roll": "Soya Achari", "Junior Soya Tikka Roll": "Soya Tikka", "Junior Paneer Tikka Roll": "Paneer Tikka",
+    "Chicken Seekh Kebab Roll": "Chicken Seekh Kebab", "Mutton Kakori Kebab Roll": "Mutton Kakori Kebab", "Mutton Seekh Kebab Roll": "Mutton Seekh Kebab", "Veg Haryali Kebab Roll": "Veg Haryali Kebab",
+    "Mutton Kroma": "Mutton Korma", "Mutton Korma (200 Gms)": "Mutton Korma", "Mutton Korma (400 Gms)": "Mutton Korma", "Butter Chicken (1pc)": "Butter Chicken", "Butter Chicken (200 Gms)": "Butter Chicken", "Paneer Zaika (200 Gms)": "Paneer Zaika", "Soya Tawa Masala (200 Gms)": "Soya Tawa Masala",
+    "Coke.": "Coke", "Coca Cola": "Coke", "Coke Zero": "Coke", "Pepsi Black": "Pepsi", "Pepsi Zero Sugar": "Pepsi", "7 Up": "7UP", "Aam Ras@80": "Aam Ras", "Red Bull": "Redbull Plain", "Red Bull Original": "Redbull Plain", "Redbull": "Redbull Plain", "Bisleri": "Water Bottle", "Bisleri Water": "Water Bottle", "Vedica Water": "Water Bottle",}
 HANDLERS = {
     "Chicken Malai Tikka": "Lalan", "Chicken Peri Peri Tikka": "Lalan", "Chicken Spicy Tikka": "Lalan", "Chicken Tikka": "Lalan", "Fish Tikka": "Lalan", "Soya Achari": "Lalan", "Soya Tikka": "Lalan", "Paneer Tikka": "Lalan", "Chicken Seekh Kebab": "Lalan", "Mutton Kakori Kebab": "Lalan", "Mutton Seekh Kebab": "Lalan", "Veg Haryali Kebab": "Lalan", "Kakori Paste": "Lalan", "Chicken Tikka Masala": "Lalan", "Mutton Seekh Masala": "Lalan", "Mutton Kakori Masala": "Lalan", "Teekhi Chutney Premix": "Lalan", "Green Chutney Premix Big": "Lalan", "Green Chutney Premix Small": "Lalan",
     "Chicken Biryani": "Rajesh", "Mutton Biryani": "Rajesh", "Non-Veg achari biryani": "Rajesh", "Veg achari biryani": "Rajesh", "Veg Biryani": "Rajesh", "Chicken Korma": "Rajesh", "Mutton Haleem": "Rajesh", "Mutton Korma": "Rajesh", "Phirni": "Rajesh", "Normal Biryani Mist": "Rajesh", "Biryani achari MIST": "Rajesh",
@@ -66,9 +71,18 @@ def read_uploaded_file(uploaded_file) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(payload), low_memory=False)
 
 
-def normalise_names(series: pd.Series) -> pd.Series:
-    return series.astype(str).str.strip().str.replace(r"\s+", " ", regex=True).str.rstrip(".").replace(ALIASES)
+def _item_key(value: object) -> str:
+    """Comparison key that removes harmless punctuation, case and extra spaces."""
+    return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
 
+
+_ALIASES_BY_KEY = {_item_key(source): target for source, target in ALIASES.items()}
+
+
+def normalise_names(series: pd.Series) -> pd.Series:
+    """Return one reporting name for spelling, punctuation and pack-size variants."""
+    cleaned = series.astype(str).str.strip().str.replace(r"\s+", " ", regex=True).str.rstrip(".")
+    return cleaned.map(lambda value: _ALIASES_BY_KEY.get(_item_key(value), value))
 
 def _base(raw: pd.DataFrame, quantity_column: str, status: str) -> pd.DataFrame:
     required = ["Branch Code", "Invoice Number", "Business Date", "Order Source", "Item Name", quantity_column, "Net Amount"]
@@ -88,7 +102,7 @@ def _base(raw: pd.DataFrame, quantity_column: str, status: str) -> pd.DataFrame:
 
 def _handler(data: pd.DataFrame) -> pd.Series:
     result = data["item_name"].map(HANDLERS)
-    drink = data["item_name"].str.contains("Coke|Sprite|Fanta|Limca|Thums Up|Water|Red Bull|Ice Tea|Ginger Ale", case=False, na=False)
+    drink = data["item_name"].str.contains("Coke|Pepsi|Sprite|Fanta|Limca|Thums Up|Water|Bisleri|Vedica|Red ?Bull|Redbull|Ice Tea|Ginger Ale|7UP|Mirinda|Mountain Dew", case=False, na=False)
     return result.mask(result.isna() & drink, "Drinks").fillna("Unassigned")
 
 
@@ -105,11 +119,12 @@ def clean_uploads(sales_upload, cancel_upload) -> pd.DataFrame:
         multiplier.loc[(sales_raw["Item Name"] == "Roomali Roti") & option & parent.eq("Mughlai Non Veg Curry Combo") & qty.eq(1)] = 2
         sales["quantity"] *= multiplier.to_numpy()
     data = pd.concat([sales, cancels], ignore_index=True)
-    large = {"Chicken Korma (Large (800 gms))", "Butter Chicken (Large (900 gms))", "Paneer Zaika (Large (800 gms))", "Dal Makhani (Large (560 gms))", "Mutton Korma (Large (800 gms))", "Mutton Nihari (Large (740 gms))", "Mutton Haleem (Large (500 gms))", "Soya Tawa Masala (Large (940 gms))"}
-    data.loc[normalise_names(data["item_name"]).isin(large), "quantity"] *= 2
     data["outlet"] = data["outlet"].replace({"NDL": "CP", "CP-67": "CP67"})
     data["source_item_name"] = data["item_name"].astype(str).str.strip()
     data["item_name"] = normalise_names(data["item_name"])
+    large_gravy = data["source_item_name"].str.contains(r"Large.*(?:800|900|940|740|560|500)\s*g", case=False, regex=True, na=False)
+    plate_items = data["item_name"].isin({"Chicken Korma", "Butter Chicken", "Paneer Zaika", "Dal Makhani", "Mutton Korma", "Mutton Nihari", "Mutton Haleem", "Soya Tawa Masala"})
+    data.loc[large_gravy & plate_items, "quantity"] *= 2
     data["unit"] = data["unit"].fillna("units").astype(str).str.strip().replace({"ea": "units", "EA": "units", "piece": "pieces", "Piece": "pieces"})
     data["handler"] = _handler(data)
     data["order_source"] = data["order_source"].astype(str).str.strip().str.lower().map({"pos": "POS", "zomato": "Zomato", "swiggy": "Swiggy", "magic_pin": "Magic_pin"}).fillna("Other")
@@ -268,21 +283,23 @@ def apply_production_measurements(data):
     factor = pd.Series(1.0, index=result.index)
     unit = pd.Series("units", index=result.index, dtype="object")
     tikka = names.isin(_TIKKA_ITEMS)
-    kebab = names.isin(_KEBAB_ITEMS) | names.str.contains(r"Junior.*(Kebab|Kakori|Seekh)", case=False, regex=True, na=False)
+    kebab = names.isin(_KEBAB_ITEMS) | names.str.contains(r"Junior.*(?:Kebab|Kakori|Seekh)", case=False, regex=True, na=False)
     junior = source.str.contains(r"\bJunior\b", case=False, na=False)
     nine_piece = source.str.contains(r"\b0?9\s*Pcs\b", case=False, regex=True, na=False)
     four_piece = source.str.contains(r"\b4\s*Pcs\b", case=False, regex=True, na=False) & ~names.eq("Butter Chicken")
     unit.loc[tikka] = "pieces"; factor.loc[tikka] = 6
     factor.loc[tikka & junior] = 3; factor.loc[tikka & nine_piece] = 9; factor.loc[tikka & four_piece] = 4
     unit.loc[kebab] = "kg"; factor.loc[kebab] = 0.180; factor.loc[kebab & junior] = 0.090
+    junior_roll = source.str.contains(r"\bJunior\b.*\bRoll\b|\bJr\.?\s*Roomali", case=False, regex=True, na=False) & ~kebab
+    unit.loc[junior_roll] = "pieces"
     coke_pepsi = names.str.contains(r"Coke|Pepsi", case=False, regex=True, na=False)
     water = names.str.contains(r"Water|Vedica|Bisleri", case=False, regex=True, na=False)
-    beverages = names.str.contains(r"Sprite|Fanta|Limca|Thums Up|Red Bull|Ice Tea|Ginger Ale|Shikanji|Aam|Drink", case=False, regex=True, na=False)
+    beverages = names.str.contains(r"Sprite|Fanta|Limca|Thums Up|Red ?Bull|Redbull|Ice Tea|Ginger Ale|Shikanji|Aam|Drink|7UP|Mirinda|Mountain Dew", case=False, regex=True, na=False)
     plates = names.str.contains(_PLATE_PATTERN, case=False, regex=True, na=False)
     unit.loc[coke_pepsi] = "cans"; unit.loc[water | beverages] = "bottles"; unit.loc[plates] = "plates"
     calculated = pd.to_numeric(result["quantity"], errors="coerce").fillna(0).abs() * factor
     existing = pd.to_numeric(result.get("analysis_quantity", pd.Series(float("nan"), index=result.index)), errors="coerce")
-    result["analysis_quantity"] = existing.where(existing.notna(), calculated)
+    result["analysis_quantity"] = existing.abs().where(existing.notna(), calculated)
     result["unit"] = unit
     return result.drop(columns=["source_item_name"], errors="ignore")
 
@@ -306,5 +323,9 @@ def clean_uploads(sales_upload, cancel_upload):
     return apply_production_measurements(_base_clean_uploads(sales_upload, cancel_upload))
 
 def load_data():
-    return apply_production_measurements(_base_load_data())
+    loaded = _base_load_data()
+    if not loaded.empty:
+        loaded["item_name"] = normalise_names(loaded["item_name"])
+        loaded["handler"] = _handler(loaded)
+    return apply_production_measurements(loaded)
 
