@@ -192,7 +192,12 @@ def sales_page():
             end = hi - timedelta(days=7)
             start = max(lo, end - timedelta(days=6))
         else:
-            start, end = st.date_input("Date range", value=(lo, hi), min_value=lo, max_value=hi)
+            date_left, date_right = st.columns(2)
+            start = date_left.date_input("From date", value=lo, min_value=lo, max_value=hi, format="DD-MM-YYYY", key="custom_start")
+            end = date_right.date_input("To date", value=hi, min_value=lo, max_value=hi, format="DD-MM-YYYY", key="custom_end")
+            if start > end:
+                st.error("From date must be on or before To date.")
+                return
         outlets = st.multiselect("Outlet", sorted(data.outlet.dropna().unique()))
         sources = st.multiselect("Order source", sorted(data.order_source.dropna().unique()))
         statuses = st.multiselect("Status", ["Completed", "Cancelled"], default=["Completed"], help="Completed is selected by default. Cancellation rows are shown as positive cancellation values when selected.")
@@ -225,6 +230,8 @@ def sales_page():
     selected_item = st.selectbox("Item for daily trend", item_options, index=item_options.index(default_item))
     selected_data = filtered[filtered.item_name.eq(selected_item)].copy()
     selected_unit = selected_data["unit"].mode().iat[0]
+    comparison_units = sorted(filtered["unit"].dropna().unique())
+    compare_unit = st.selectbox("Unit for item comparison", comparison_units, index=comparison_units.index(selected_unit) if selected_unit in comparison_units else 0)
     selected_total = selected_data[metric].sum()
     selected_average = selected_total / day_count
 
@@ -232,13 +239,11 @@ def sales_page():
     a.metric(f"{selected_item} total {metric_label}", f"{selected_total:,.2f}")
     b.metric(f"Average per business day ({selected_unit if selected == 'Quantity' else 'INR'})", f"{selected_average:,.2f}")
     c.metric("Business dates included", f"{day_count:,}")
-    d.metric("Selected item unit", selected_unit)
+    d.metric("Comparison unit", compare_unit)
 
     st.subheader("Item-specific daily trend")
-    st.caption(f"The line below is only for {selected_item}. It does not combine different items or units.")
+    st.caption(f"The line below is only for {selected_item} ({selected_unit}). The comparison card changes with the unit selector.")
     daily_item = selected_data.groupby("date", as_index=False)[metric].sum()
-    comparison_units = sorted(filtered["unit"].dropna().unique())
-    compare_unit = st.selectbox("Unit for item comparison", comparison_units, index=comparison_units.index(selected_unit) if selected_unit in comparison_units else 0)
     comparison = filtered[filtered.unit.eq(compare_unit)].groupby(["item_name", "unit"], as_index=False)[metric].sum()
     comparison["Average per Business Day"] = comparison[metric] / day_count
     comparison = comparison.sort_values("Average per Business Day", ascending=False).head(25)
