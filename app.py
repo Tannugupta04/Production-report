@@ -250,14 +250,14 @@ def sales_page():
     left, right = st.columns(2)
     y_label = f"{metric_label} ({selected_unit})" if selected == "Quantity" else metric_label
     with left:
-        st.plotly_chart(px.line(daily_item, x="date", y=metric, markers=True, title=f"Daily {metric_label}: {selected_item} ({selected_unit})", labels={metric: y_label, "date": "Business date"}), use_container_width=True)
+        st.plotly_chart(px.line(daily_item, x="date", y=metric, markers=True, title=f"Daily {metric_label}: {selected_item} ({selected_unit})", labels={metric: y_label, "date": "Business date"}), width="stretch")
     with right:
-        st.plotly_chart(px.bar(comparison.sort_values("Average per Business Day"), x="Average per Business Day", y="item_name", orientation="h", title=f"Top 25 items: daily average ({compare_unit})", labels={"item_name": "Item", "Average per Business Day": f"Average {metric_label} per business day"}), use_container_width=True)
+        st.plotly_chart(px.bar(comparison.sort_values("Average per Business Day"), x="Average per Business Day", y="item_name", orientation="h", title=f"Top 25 items: daily average ({compare_unit})", labels={"item_name": "Item", "Average per Business Day": f"Average {metric_label} per business day"}), width="stretch")
 
     st.subheader("All items: totals and averages")
     st.caption("Quantities are kept separate by unit. The table is the single place to review total quantity, total sales, and the correct per-business-day averages.")
     summary = item_summary(filtered, day_count)
-    st.dataframe(summary.round(2), hide_index=True, use_container_width=True)
+    st.dataframe(summary.round(2), hide_index=True, width="stretch")
 
     st.subheader("Item-wise weekday average")
     st.caption("For example, a Sunday average divides the total by every Sunday business date in the selected period, including Sundays with no sale for an item.")
@@ -274,11 +274,11 @@ def sales_page():
             report[average_label] = report[metric] / occurrences
             report = report.sort_values(average_label, ascending=False)
             st.caption(f"Calculated across {occurrences} {day}{'' if occurrences == 1 else 's'}.")
-            st.plotly_chart(px.bar(report.head(35), x="item_name", y=average_label, color="unit", title=f"{day}: average {metric_label} by item", labels={"item_name": "Item", "unit": "Unit"}).update_xaxes(tickangle=-45), use_container_width=True)
-            st.dataframe(report.rename(columns={"item_name": "Item", "unit": "Unit", metric: f"Total {metric_label}"}).round(2), hide_index=True, use_container_width=True)
+            st.plotly_chart(px.bar(report.head(35), x="item_name", y=average_label, color="unit", title=f"{day}: average {metric_label} by item", labels={"item_name": "Item", "unit": "Unit"}).update_xaxes(tickangle=-45), width="stretch")
+            st.dataframe(report.rename(columns={"item_name": "Item", "unit": "Unit", metric: f"Total {metric_label}"}).round(2), hide_index=True, width="stretch")
 
     with st.expander("Stored data and download"):
-        st.dataframe(upload_summary(), hide_index=True, use_container_width=True)
+        st.dataframe(upload_summary(), hide_index=True, width="stretch")
         report_bytes = download_sales_report(filtered, scope, start, end, statuses)
         st.download_button("Download formatted sales analysis (Excel)", report_bytes, "sales_analysis.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
@@ -316,12 +316,12 @@ def production_page():
     day_benchmark = day_benchmark.sort_values(["item_name", "weekday"])
     matrix = day_benchmark.pivot(index="item_name", columns="weekday", values="Median").reindex(columns=WEEKDAYS).reset_index()
     st.subheader("Recommended weekly production")
-    st.dataframe(benchmark.round(0), hide_index=True, use_container_width=True)
+    st.dataframe(benchmark.round(0), hide_index=True, width="stretch")
     for day, tab in zip(WEEKDAYS, st.tabs(WEEKDAYS)):
         with tab:
             view = day_benchmark[day_benchmark.weekday.eq(day)].sort_values("P75", ascending=False)
-            st.plotly_chart(px.bar(view, x="item_name", y="P75", title=f"{day} production benchmark (P75)").update_xaxes(tickangle=-45), use_container_width=True)
-            st.dataframe(view.round(2), hide_index=True, use_container_width=True)
+            st.plotly_chart(px.bar(view, x="item_name", y="P75", title=f"{day} production benchmark (P75)").update_xaxes(tickangle=-45), width="stretch")
+            st.dataframe(view.round(2), hide_index=True, width="stretch")
     st.download_button("Download Monday-Sunday pattern (+10%)", download_pattern(matrix, 10), "monday_sunday_production_pattern_plus_10.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
