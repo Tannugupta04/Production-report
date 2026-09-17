@@ -11,6 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 DB_PATH = Path("data/sales_dashboard.db")
+DASHBOARD_COLUMNS = "date, outlet, order_source, item_name, quantity, unit, net_sales, status, handler, weekday, month, analysis_quantity"
 
 # Standardises reporting names while preserving unlisted items.
 ALIASES = {
@@ -146,7 +147,7 @@ def save_batch(data: pd.DataFrame, sales_upload, cancel_upload) -> tuple[str, bo
 
 def load_data() -> pd.DataFrame:
     init_database()
-    with _connect() as conn: data = pd.read_sql_query("SELECT * FROM cleaned_transactions", conn)
+    with _connect() as conn: data = pd.read_sql_query(f"SELECT {DASHBOARD_COLUMNS} FROM cleaned_transactions", conn)
     if not data.empty: data["date"] = pd.to_datetime(data["date"])
     return data
 
@@ -242,7 +243,7 @@ if _EXTERNAL_URL:
 
     def load_data():
         init_database()
-        with _ENGINE.connect() as conn: data = pd.read_sql(text("SELECT * FROM cleaned_transactions"), conn)
+        with _ENGINE.connect() as conn: data = pd.read_sql(text(f"SELECT {DASHBOARD_COLUMNS} FROM cleaned_transactions"), conn)
         if not data.empty: data["date"] = pd.to_datetime(data["date"])
         return data
 

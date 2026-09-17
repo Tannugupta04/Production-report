@@ -24,12 +24,12 @@ st.set_page_config(page_title="Weekly Itemwise Sales", page_icon="Sales", layout
 WEEKDAYS = list(calendar.day_name)
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def sales_data():
     return load_data()
 
 
-@st.cache_data(show_spinner=False)
+@st.cache_resource(show_spinner=False)
 def dispatch_data():
     return load_dispatch_data()
 
@@ -136,12 +136,6 @@ def download_sales_report(filtered, scope, start, end, statuses):
     day_count = scope["date"].dt.date.nunique()
     summary = item_summary(filtered, day_count)
     weekday = weekday_summary(filtered, scope)
-    details = filtered[["date", "weekday", "item_name", "unit", "analysis_quantity", "display_sales", "outlet", "order_source", "status", "handler", "invoice"]].copy()
-    details = details.rename(columns={
-        "date": "Business Date", "weekday": "Weekday", "item_name": "Item", "unit": "Unit",
-        "analysis_quantity": "Quantity", "display_sales": "Sales (INR)", "outlet": "Outlet",
-        "order_source": "Order Source", "status": "Status", "handler": "Handled By", "invoice": "Invoice",
-    }).sort_values(["Business Date", "Item"])
     subtitle = f"Period: {start:%d-%b-%Y} to {end:%d-%b-%Y} | Business dates used for daily averages: {day_count} | Status: {', '.join(statuses)}"
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
@@ -149,8 +143,6 @@ def download_sales_report(filtered, scope, start, end, statuses):
         _style_sheet(writer.sheets["Item summary"], "Sales and Quantity Summary", subtitle, 4, {1: 34, 2: 14, 3: 18, 4: 22, 5: 18, 6: 27}, {"Total Sales (INR)", "Average Sales per Business Day (INR)"})
         weekday.to_excel(writer, sheet_name="Weekday averages", index=False, startrow=3)
         _style_sheet(writer.sheets["Weekday averages"], "Weekday Item Averages", "Each weekday average divides by the number of matching business dates in the selected period.", 4, {1: 14, 2: 34, 3: 14, 4: 20, 5: 18, 6: 18, 7: 27, 8: 27}, {"Total Sales (INR)", "Average Sales per Weekday (INR)"})
-        details.to_excel(writer, sheet_name="Filtered transactions", index=False, startrow=3)
-        _style_sheet(writer.sheets["Filtered transactions"], "Filtered Cleaned Transactions", subtitle, 4, {1: 16, 2: 13, 3: 34, 4: 14, 5: 14, 6: 16, 7: 13, 8: 16, 9: 13, 10: 18, 11: 16}, {"Sales (INR)"}, {"Business Date"})
     return out.getvalue()
 
 
@@ -167,6 +159,9 @@ def sales_page():
                     cleaned = clean_uploads(sales_file, cancel_file)
                     batch_id, saved = save_batch(cleaned, sales_file, cancel_file)
                 st.cache_data.clear()
+                st.cache_resource.clear()
+                st.session_state.pop("sales_report_bytes", None)
+                st.session_state.pop("sales_report_signature", None)
                 st.success(f"{'Saved' if saved else 'Already saved'} {len(cleaned):,} cleaned records ({batch_id}).")
             except Exception as error:
                 st.error(str(error))
@@ -175,7 +170,6 @@ def sales_page():
     if data.empty:
         st.info("Upload one Sales file and one Cancel file to start.")
         return
-    data["unit"] = data.get("unit", "units").fillna("units").replace("", "units")
     with st.sidebar:
         st.divider()
         st.header("Current dashboard filters")
@@ -279,8 +273,15 @@ def sales_page():
 
     with st.expander("Stored data and download"):
         st.dataframe(upload_summary(), hide_index=True, width="stretch")
-        report_bytes = download_sales_report(filtered, scope, start, end, statuses)
-        st.download_button("Download formatted sales analysis (Excel)", report_bytes, "sales_analysis.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        report_signature = (str(start), str(end), tuple(statuses), tuple(outlets), tuple(sources), tuple(handlers))
+        if st.button("Prepare formatted sales analysis", key="prepare_sales_report"):
+            with st.spinner("Preparing the compact analysis workbook..."):
+                st.session_state["sales_report_bytes"] = download_sales_report(filtered, scope, start, end, statuses)
+                st.session_state["sales_report_signature"] = report_signature
+        if st.session_state.get("sales_report_signature") == report_signature:
+            st.download_button("Download formatted sales analysis (Excel)", st.session_state["sales_report_bytes"], "sales_analysis.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        else:
+            st.caption("Choose the filters, then select Prepare to create the Excel analysis.")
 
 
 def production_page():
@@ -294,6 +295,7 @@ def production_page():
                 cleaned = clean_dispatch_upload(upload)
                 batch_id, saved = save_dispatch_batch(cleaned, upload)
                 st.cache_data.clear()
+                st.cache_resource.clear()
                 st.success(f"{'Saved' if saved else 'Already saved'} {len(cleaned):,} dispatch rows ({batch_id}).")
             except Exception as error:
                 st.error(str(error))
