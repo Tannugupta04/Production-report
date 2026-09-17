@@ -173,7 +173,7 @@ def save_dispatch_batch(data: pd.DataFrame, uploaded_file) -> tuple[str, bool]:
     with _connect() as conn:
         if conn.execute("SELECT 1 FROM dispatch_uploads WHERE batch_id = ?", (batch_id,)).fetchone(): return batch_id, False
         conn.execute("INSERT INTO dispatch_uploads VALUES (?, ?, ?, ?)", (batch_id, datetime.now(timezone.utc).isoformat(), uploaded_file.name, len(data)))
-        stored = data.copy(); stored["batch_id"] = batch_id; stored["transfer_date"] = stored["transfer_date"].dt.strftime("%Y-%m-%d"); stored["week_start"] = stored["week_start"].dt.strftime("%Y-%m-%d")
+        stored = data.drop(columns=["source_item_name"], errors="ignore").copy(); stored["batch_id"] = batch_id; stored["transfer_date"] = stored["transfer_date"].dt.strftime("%Y-%m-%d"); stored["week_start"] = stored["week_start"].dt.strftime("%Y-%m-%d")
         stored.to_sql("cleaned_dispatch", conn, if_exists="append", index=False)
     return batch_id, True
 
@@ -256,7 +256,7 @@ if _EXTERNAL_URL:
         with _ENGINE.begin() as conn:
             if conn.execute(text("SELECT 1 FROM dispatch_uploads WHERE batch_id = :id"), {"id": batch_id}).first(): return batch_id, False
             conn.execute(text("INSERT INTO dispatch_uploads VALUES (:id, :time, :name, :rows)"), {"id": batch_id, "time": datetime.now(timezone.utc).isoformat(), "name": uploaded_file.name, "rows": len(data)})
-            stored = data.copy(); stored["batch_id"] = batch_id; stored["transfer_date"] = stored["transfer_date"].dt.strftime("%Y-%m-%d"); stored["week_start"] = stored["week_start"].dt.strftime("%Y-%m-%d")
+            stored = data.drop(columns=["source_item_name"], errors="ignore").copy(); stored["batch_id"] = batch_id; stored["transfer_date"] = stored["transfer_date"].dt.strftime("%Y-%m-%d"); stored["week_start"] = stored["week_start"].dt.strftime("%Y-%m-%d")
             stored.to_sql("cleaned_dispatch", conn, if_exists="append", index=False)
         return batch_id, True
 
