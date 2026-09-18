@@ -352,14 +352,20 @@ def production_page():
 def summary_page():
     st.title("Summary")
     st.caption("Select a planning weekday. Summary values use the weekday two days later: Monday → Wednesday, Tuesday → Thursday, and so on.")
+    dispatch = dispatch_data()
+    with st.sidebar:
+        st.divider()
+        st.header("Summary filters")
+        summary_handlers = st.multiselect("Handled by", sorted(dispatch.handler.dropna().unique()) if not dispatch.empty else [], key="summary_handlers")
     selected_day = st.selectbox("Planning weekday", WEEKDAYS, key="summary_planning_day")
     summary_day = WEEKDAYS[(WEEKDAYS.index(selected_day) + 2) % len(WEEKDAYS)]
     adjustment_percent = st.number_input("Increase production and dispatch by (%)", min_value=-100.0, max_value=500.0, value=0.0, step=1.0, key="summary_adjustment")
     st.info(f"Selected {selected_day}: showing {summary_day} sales, quantity, production and dispatch values.")
 
-    dispatch = dispatch_data()
+    if summary_handlers:
+        dispatch = dispatch[dispatch.handler.isin(summary_handlers)]
     if dispatch.empty:
-        st.warning("Upload dispatch data to create the Production and Dispatch columns.")
+        st.warning("No dispatch data matches the selected person filter.")
         return
     _, _, pattern = dispatch_outputs(dispatch)
     production = pattern[["item_name", summary_day]].copy().rename(columns={"item_name": "Item name", summary_day: "Production"})
@@ -368,7 +374,15 @@ def summary_page():
 
     st.subheader("Production")
     st.caption(f"{summary_day} Monday-Sunday pattern with {adjustment_percent:g}% adjustment.")
-    st.dataframe(production, hide_index=True, width="stretch")
+    st.dataframe(
+        production,
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Item name": st.column_config.TextColumn("Item name", width="large"),
+            "Production": st.column_config.NumberColumn("Production", format="#,##0"),
+        },
+    )
 
     sales = sales_data()
     dispatch_values = production.rename(columns={"Production": "Dispatch"})
@@ -378,6 +392,8 @@ def summary_page():
         combined.insert(2, "Quantity", 0.0)
     else:
         sales_scope = sales[(sales.weekday.eq(summary_day)) & (sales.status.eq("Completed"))]
+        if summary_handlers:
+            sales_scope = sales_scope[sales_scope.handler.isin(summary_handlers)]
         weekday_occurrences = sales.loc[sales.weekday.eq(summary_day), "date"].dt.date.nunique()
         if weekday_occurrences:
             sales_metrics = sales_scope.groupby("item_name", as_index=False).agg(
@@ -390,7 +406,17 @@ def summary_page():
     combined = combined[["Item name", "Sales", "Quantity", "Dispatch"]].sort_values("Item name")
     st.subheader("Sales and dispatch")
     st.caption(f"Sales and quantity are average {summary_day} values across every {summary_day} in stored completed sales data. Dispatch includes the {adjustment_percent:g}% adjustment.")
-    st.dataframe(combined.round(2), hide_index=True, width="stretch")
+    st.dataframe(
+        combined.round(2),
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "Item name": st.column_config.TextColumn("Item name", width="large"),
+            "Sales": st.column_config.NumberColumn("Sales (INR)", format="₹#,##0.00"),
+            "Quantity": st.column_config.NumberColumn("Quantity", format="#,##0.00"),
+            "Dispatch": st.column_config.NumberColumn("Dispatch", format="#,##0"),
+        },
+    )
 
 
 page = st.sidebar.radio("Page", ["Sales dashboard", "Dispatch & production", "Summary"])
