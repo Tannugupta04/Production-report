@@ -12,6 +12,7 @@ import pandas as pd
 
 DB_PATH = Path("data/sales_dashboard.db")
 DASHBOARD_COLUMNS = "date, outlet, order_source, item_name, quantity, unit, net_sales, status, handler, weekday, month, analysis_quantity"
+DATE_FORMAT_MIGRATION = "sales_ddmmyyyy_2026_v1"
 
 # Standardises reporting names while preserving unlisted items.
 ALIASES = {
@@ -72,6 +73,16 @@ def read_uploaded_file(uploaded_file) -> pd.DataFrame:
     return pd.read_csv(io.BytesIO(payload), low_memory=False)
 
 
+def parse_business_dates(values: pd.Series) -> pd.Series:
+    """Parse POS dates as DD-MM-YYYY while preserving unambiguous ISO dates."""
+    text_values = values.astype(str).str.strip()
+    iso_dates = text_values.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}", na=False)
+    parsed = pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
+    parsed.loc[iso_dates] = pd.to_datetime(text_values.loc[iso_dates], format="mixed", errors="coerce")
+    parsed.loc[~iso_dates] = pd.to_datetime(text_values.loc[~iso_dates], format="mixed", dayfirst=True, errors="coerce")
+    return parsed
+
+
 def _item_key(value: object) -> str:
     """Comparison key that removes harmless punctuation, case and extra spaces."""
     return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
@@ -93,7 +104,7 @@ def _base(raw: pd.DataFrame, quantity_column: str, status: str) -> pd.DataFrame:
     timestamp_source = raw["Created Time"] if "Created Time" in raw.columns else raw.get("Invoice Date", pd.Series(pd.NaT, index=raw.index))
     timestamp = pd.to_datetime(timestamp_source, errors="coerce")
     return pd.DataFrame({
-        "outlet": raw["Branch Code"], "invoice": raw["Invoice Number"], "date": pd.to_datetime(raw["Business Date"], errors="coerce"),
+        "outlet": raw["Branch Code"], "invoice": raw["Invoice Number"], "date": parse_business_dates(raw["Business Date"]),
         "order_source": raw["Order Source"], "item_name": raw["Item Name"], "quantity": pd.to_numeric(raw[quantity_column], errors="coerce").fillna(0),
         "unit": raw.get("Measuring Unit", pd.Series("units", index=raw.index)), "net_sales": pd.to_numeric(raw["Net Amount"], errors="coerce").fillna(0),
         "category": raw.get("Category", pd.Series("Uncategorised", index=raw.index)), "customer_name": raw.get("Customer Name", pd.Series("", index=raw.index)),
@@ -163,7 +174,7 @@ def clean_dispatch_upload(uploaded_file) -> pd.DataFrame:
     if missing: raise ValueError(f"Dispatch file is missing: {', '.join(missing)}")
     data = raw[required].rename(columns={"Item Name": "item_name", "Quantity Delivered": "quantity_delivered", "Transfer Date": "transfer_date"}).copy()
     data["source_item_name"] = data["item_name"].astype(str).str.strip()
-    data["item_name"] = normalise_names(data["item_name"]); data["quantity_delivered"] = pd.to_numeric(data["quantity_delivered"], errors="coerce"); data["transfer_date"] = pd.to_datetime(data["transfer_date"], errors="coerce").dt.normalize()
+    data["item_name"] = normalise_names(data["item_name"]); data["quantity_delivered"] = pd.to_numeric(data["quantity_delivered"], errors="coerce"); data["transfer_date"] = parse_business_dates(data["transfer_date"]).dt.normalize()
     data = data.dropna().loc[lambda frame: frame["quantity_delivered"].gt(0)].copy(); data["weekday"] = data["transfer_date"].dt.day_name(); data["week_start"] = data["transfer_date"] - pd.to_timedelta(data["transfer_date"].dt.dayofweek, unit="D")
     data["handler"] = _handler(data)
     return data.reset_index(drop=True)
@@ -328,6 +339,17 @@ def init_database():
         with _ENGINE.begin() as conn:
             conn.execute(text("ALTER TABLE cleaned_transactions ADD COLUMN IF NOT EXISTS analysis_quantity DOUBLE PRECISION"))
             conn.execute(text("ALTER TABLE cleaned_dispatch ADD COLUMN IF NOT EXISTS handler TEXT"))
+            conn.execute(text("CREATE TABLE IF NOT EXISTS data_migrations (name TEXT PRIMARY KEY)"))
+            applied = conn.execute(text("SELECT 1 FROM data_migrations WHERE name = :name"), {"name": DATE_FORMAT_MIGRATION}).first()
+            if not applied:
+                conn.execute(text("""
+                    UPDATE cleaned_transactions
+                    SET date = substring(date from 1 for 4) || '-' || substring(date from 9 for 2) || '-' || substring(date from 6 for 2)
+                    WHERE length(date) = 10 AND substring(date from 1 for 4) = '2026'
+                      AND substring(date from 6 for 2)::integer BETWEEN 1 AND 12
+                      AND substring(date from 9 for 2)::integer BETWEEN 1 AND 12
+                """))
+                conn.execute(text("INSERT INTO data_migrations (name) VALUES (:name)"), {"name": DATE_FORMAT_MIGRATION})
     else:
         with _connect() as conn:
             try:
@@ -338,6 +360,17 @@ def init_database():
                 conn.execute("ALTER TABLE cleaned_dispatch ADD COLUMN handler TEXT")
             except sqlite3.OperationalError:
                 pass
+            conn.execute("CREATE TABLE IF NOT EXISTS data_migrations (name TEXT PRIMARY KEY)")
+            applied = conn.execute("SELECT 1 FROM data_migrations WHERE name = ?", (DATE_FORMAT_MIGRATION,)).fetchone()
+            if not applied:
+                conn.execute("""
+                    UPDATE cleaned_transactions
+                    SET date = substr(date, 1, 4) || '-' || substr(date, 9, 2) || '-' || substr(date, 6, 2)
+                    WHERE length(date) = 10 AND substr(date, 1, 4) = '2026'
+                      AND CAST(substr(date, 6, 2) AS INTEGER) BETWEEN 1 AND 12
+                      AND CAST(substr(date, 9, 2) AS INTEGER) BETWEEN 1 AND 12
+                """)
+                conn.execute("INSERT INTO data_migrations (name) VALUES (?)", (DATE_FORMAT_MIGRATION,))
 
 def clean_uploads(sales_upload, cancel_upload):
     return apply_production_measurements(_base_clean_uploads(sales_upload, cancel_upload))
@@ -345,8 +378,12 @@ def clean_uploads(sales_upload, cancel_upload):
 def load_data():
     loaded = _base_load_data()
     if not loaded.empty:
+        loaded["date"] = pd.to_datetime(loaded["date"], errors="coerce")
         loaded["item_name"] = normalise_names(loaded["item_name"])
         loaded["handler"] = _handler(loaded)
+        loaded["weekday"] = loaded["date"].dt.day_name()
+        loaded["month"] = loaded["date"].dt.strftime("%B %Y")
+        loaded["week_number"] = loaded["date"].dt.isocalendar().week.astype("Int64")
     return apply_production_measurements(loaded)
 
 
