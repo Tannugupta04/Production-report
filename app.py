@@ -369,7 +369,7 @@ def summary_page():
         return
     _, _, pattern = dispatch_outputs(dispatch)
     production = pattern[["item_name", summary_day]].copy().rename(columns={"item_name": "Item name", summary_day: "Production"})
-    production["Production"] = np.ceil(pd.to_numeric(production["Production"], errors="coerce").fillna(0) * (1 + adjustment_percent / 100))
+    production["Production"] = np.ceil(pd.to_numeric(production["Production"], errors="coerce").fillna(0) * (1 + adjustment_percent / 100)).astype(int)
     production = production.sort_values("Item name")
 
     st.subheader("Production")
@@ -380,7 +380,7 @@ def summary_page():
         width="stretch",
         column_config={
             "Item name": st.column_config.TextColumn("Item name", width="large"),
-            "Production": st.column_config.NumberColumn("Production", format="#,##0"),
+            "Production": st.column_config.NumberColumn("Production", format="%,d"),
         },
     )
 
@@ -404,17 +404,18 @@ def summary_page():
             sales_metrics = pd.DataFrame(columns=["Item name", "Sales", "Quantity"])
         combined = sales_metrics.merge(dispatch_values, on="Item name", how="outer").fillna(0)
     combined = combined[["Item name", "Sales", "Quantity", "Dispatch"]].sort_values("Item name")
+    combined[["Sales", "Quantity", "Dispatch"]] = combined[["Sales", "Quantity", "Dispatch"]].round(0).astype(int)
     st.subheader("Sales and dispatch")
-    st.caption(f"Sales and quantity are average {summary_day} values across every {summary_day} in stored completed sales data. Dispatch includes the {adjustment_percent:g}% adjustment.")
+    st.markdown(f"Sales and quantity are average **:blue[{summary_day}]** values across every **:blue[{summary_day}]** in stored completed sales data. Dispatch includes the {adjustment_percent:g}% adjustment.")
     st.dataframe(
-        combined.round(2),
+        combined,
         hide_index=True,
         width="stretch",
         column_config={
             "Item name": st.column_config.TextColumn("Item name", width="large"),
-            "Sales": st.column_config.NumberColumn("Sales (INR)", format="₹#,##0.00"),
-            "Quantity": st.column_config.NumberColumn("Quantity", format="#,##0.00"),
-            "Dispatch": st.column_config.NumberColumn("Dispatch", format="#,##0"),
+            "Sales": st.column_config.NumberColumn("Sales (INR)", format="%,d"),
+            "Quantity": st.column_config.NumberColumn("Quantity", format="%,d"),
+            "Dispatch": st.column_config.NumberColumn("Dispatch", format="%,d"),
         },
     )
 
