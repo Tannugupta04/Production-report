@@ -12,7 +12,7 @@ import pandas as pd
 
 DB_PATH = Path("data/sales_dashboard.db")
 DASHBOARD_COLUMNS = "date, outlet, order_source, item_name, quantity, unit, net_sales, status, handler, weekday, month, analysis_quantity"
-DATE_FORMAT_MIGRATION = "sales_ddmmyyyy_2026_v1"
+DATE_FORMAT_MIGRATION = "sales_ddmmyyyy_2026_v2"
 
 # Standardises reporting names while preserving unlisted items.
 ALIASES = {
@@ -77,9 +77,13 @@ def parse_business_dates(values: pd.Series) -> pd.Series:
     """Parse POS dates as DD-MM-YYYY while preserving unambiguous ISO dates."""
     text_values = values.astype(str).str.strip()
     iso_dates = text_values.str.match(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}", na=False)
+    day_first_dates = text_values.str.match(r"^\d{1,2}[-/]\d{1,2}[-/]\d{4}$", na=False)
     parsed = pd.Series(pd.NaT, index=values.index, dtype="datetime64[ns]")
     parsed.loc[iso_dates] = pd.to_datetime(text_values.loc[iso_dates], format="mixed", errors="coerce")
-    parsed.loc[~iso_dates] = pd.to_datetime(text_values.loc[~iso_dates], format="mixed", dayfirst=True, errors="coerce")
+    day_first_values = text_values.loc[day_first_dates & ~iso_dates].str.replace("/", "-", regex=False)
+    parsed.loc[day_first_values.index] = pd.to_datetime(day_first_values, format="%d-%m-%Y", errors="coerce")
+    remaining = ~(iso_dates | day_first_dates)
+    parsed.loc[remaining] = pd.to_datetime(text_values.loc[remaining], format="mixed", dayfirst=True, errors="coerce")
     return parsed
 
 
