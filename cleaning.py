@@ -305,6 +305,19 @@ def apply_production_measurements(data):
     result["unit"] = unit
     return result.drop(columns=["source_item_name"], errors="ignore")
 
+
+def apply_item_uom(data: pd.DataFrame) -> pd.DataFrame:
+    """Add the dashboard UOM to any item table; unknown items intentionally stay blank."""
+    result = data.copy()
+    source = result.get("source_item_name", result["item_name"])
+    lookup = pd.DataFrame({
+        "item_name": result["item_name"],
+        "source_item_name": source,
+        "quantity": 1.0,
+    }, index=result.index)
+    result["unit"] = apply_production_measurements(lookup)["unit"].replace("units", "")
+    return result
+
 _base_init_database = init_database
 _base_clean_uploads = clean_uploads
 _base_load_data = load_data
@@ -346,5 +359,6 @@ def load_dispatch_data():
     if not loaded.empty:
         loaded["item_name"] = normalise_names(loaded["item_name"])
         loaded["handler"] = _handler(loaded)
+        loaded = apply_item_uom(loaded)
     return loaded
 

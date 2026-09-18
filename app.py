@@ -148,6 +148,7 @@ def download_sales_report(filtered, scope, start, end, statuses):
 
 def dispatch_outputs(data):
     """Calculate the shared production benchmarks and Monday-Sunday median pattern."""
+    item_units = data[["item_name", "unit"]].drop_duplicates(subset=["item_name"])
     daily = data.groupby(["transfer_date", "item_name", "weekday"], as_index=False).quantity_delivered.sum()
     weekly = (
         daily.assign(week_start=daily.transfer_date - pd.to_timedelta(daily.transfer_date.dt.dayofweek, unit="D"))
@@ -159,12 +160,17 @@ def dispatch_outputs(data):
         P90_Weekly=lambda values: values.quantile(.90), Min_Weekly="min", Max_Weekly="max",
     ).reset_index()
     benchmark["Recommended Weekly Production"] = np.ceil(benchmark.P75_Weekly * 1.10).astype(int)
+    benchmark = benchmark.merge(item_units, on="item_name", how="left")
+    benchmark = benchmark[["item_name", "unit", *[column for column in benchmark.columns if column not in {"item_name", "unit"}]]]
     day_benchmark = daily.groupby(["item_name", "weekday"])["quantity_delivered"].agg(
         Average="mean", Median="median", P75=lambda values: values.quantile(.75), P90=lambda values: values.quantile(.90),
     ).reset_index()
     day_benchmark.weekday = pd.Categorical(day_benchmark.weekday, categories=WEEKDAYS, ordered=True)
-    day_benchmark = day_benchmark.sort_values(["item_name", "weekday"])
+    day_benchmark = day_benchmark.merge(item_units, on="item_name", how="left").sort_values(["item_name", "weekday"])
+    day_benchmark = day_benchmark[["item_name", "unit", *[column for column in day_benchmark.columns if column not in {"item_name", "unit"}]]]
     matrix = day_benchmark.pivot(index="item_name", columns="weekday", values="Median").reindex(columns=WEEKDAYS).reset_index()
+    matrix = matrix.merge(item_units, on="item_name", how="left")
+    matrix = matrix[["item_name", "unit", *WEEKDAYS]]
     return benchmark, day_benchmark, matrix
 
 
@@ -368,7 +374,7 @@ def summary_page():
         st.warning("No dispatch data matches the selected person filter.")
         return
     _, _, pattern = dispatch_outputs(dispatch)
-    production = pattern[["item_name", summary_day]].copy().rename(columns={"item_name": "Item name", summary_day: "Production"})
+    production = pattern[["item_name", "unit", summary_day]].copy().rename(columns={"item_name": "Item name", "unit": "UOM", summary_day: "Production"})
     production["Production"] = np.ceil(pd.to_numeric(production["Production"], errors="coerce").fillna(0) * (1 + adjustment_percent / 100)).astype(int)
     production = production.sort_values("Item name")
 
@@ -380,6 +386,7 @@ def summary_page():
         width="stretch",
         column_config={
             "Item name": st.column_config.TextColumn("Item name", width="large"),
+            "UOM": st.column_config.TextColumn("UOM", width="small"),
             "Production": st.column_config.NumberColumn("Production", format="%,d"),
         },
     )
@@ -394,16 +401,17 @@ def summary_page():
         sales_scope = sales[(sales.weekday.eq(summary_day)) & (sales.status.eq("Completed"))]
         if summary_handlers:
             sales_scope = sales_scope[sales_scope.handler.isin(summary_handlers)]
+        sales_scope = sales_scope.assign(unit=sales_scope["unit"].replace("units", ""))
         weekday_occurrences = sales.loc[sales.weekday.eq(summary_day), "date"].dt.date.nunique()
         if weekday_occurrences:
-            sales_metrics = sales_scope.groupby("item_name", as_index=False).agg(
+            sales_metrics = sales_scope.groupby(["item_name", "unit"], as_index=False).agg(
                 Sales=("net_sales", lambda values: values.abs().sum() / weekday_occurrences),
                 Quantity=("analysis_quantity", lambda values: values.abs().sum() / weekday_occurrences),
-            ).rename(columns={"item_name": "Item name"})
+            ).rename(columns={"item_name": "Item name", "unit": "UOM"})
         else:
-            sales_metrics = pd.DataFrame(columns=["Item name", "Sales", "Quantity"])
-        combined = sales_metrics.merge(dispatch_values, on="Item name", how="outer").fillna(0)
-    combined = combined[["Item name", "Sales", "Quantity", "Dispatch"]].sort_values("Item name")
+            sales_metrics = pd.DataFrame(columns=["Item name", "UOM", "Sales", "Quantity"])
+        combined = sales_metrics.merge(dispatch_values, on=["Item name", "UOM"], how="outer").fillna(0)
+    combined = combined[["Item name", "UOM", "Sales", "Quantity", "Dispatch"]].sort_values("Item name")
     combined[["Sales", "Quantity", "Dispatch"]] = combined[["Sales", "Quantity", "Dispatch"]].round(0).astype(int)
     st.subheader("Sales and dispatch")
     st.markdown(f"Sales and quantity are average **:blue[{summary_day}]** values across every **:blue[{summary_day}]** in stored completed sales data. Dispatch includes the {adjustment_percent:g}% adjustment.")
@@ -413,6 +421,7 @@ def summary_page():
         width="stretch",
         column_config={
             "Item name": st.column_config.TextColumn("Item name", width="large"),
+            "UOM": st.column_config.TextColumn("UOM", width="small"),
             "Sales": st.column_config.NumberColumn("Sales (INR)", format="%,d"),
             "Quantity": st.column_config.NumberColumn("Quantity", format="%,d"),
             "Dispatch": st.column_config.NumberColumn("Dispatch", format="%,d"),
