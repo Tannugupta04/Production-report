@@ -146,6 +146,28 @@ def download_sales_report(filtered, scope, start, end, statuses):
     return out.getvalue()
 
 
+def dispatch_outputs(data):
+    """Calculate the shared production benchmarks and Monday-Sunday median pattern."""
+    daily = data.groupby(["transfer_date", "item_name", "weekday"], as_index=False).quantity_delivered.sum()
+    weekly = (
+        daily.assign(week_start=daily.transfer_date - pd.to_timedelta(daily.transfer_date.dt.dayofweek, unit="D"))
+        .groupby(["week_start", "item_name"], as_index=False).quantity_delivered.sum()
+        .rename(columns={"quantity_delivered": "Weekly Quantity"})
+    )
+    benchmark = weekly.groupby("item_name")["Weekly Quantity"].agg(
+        Average_Weekly="mean", Median_Weekly="median", P75_Weekly=lambda values: values.quantile(.75),
+        P90_Weekly=lambda values: values.quantile(.90), Min_Weekly="min", Max_Weekly="max",
+    ).reset_index()
+    benchmark["Recommended Weekly Production"] = np.ceil(benchmark.P75_Weekly * 1.10).astype(int)
+    day_benchmark = daily.groupby(["item_name", "weekday"])["quantity_delivered"].agg(
+        Average="mean", Median="median", P75=lambda values: values.quantile(.75), P90=lambda values: values.quantile(.90),
+    ).reset_index()
+    day_benchmark.weekday = pd.Categorical(day_benchmark.weekday, categories=WEEKDAYS, ordered=True)
+    day_benchmark = day_benchmark.sort_values(["item_name", "weekday"])
+    matrix = day_benchmark.pivot(index="item_name", columns="weekday", values="Median").reindex(columns=WEEKDAYS).reset_index()
+    return benchmark, day_benchmark, matrix
+
+
 def sales_page():
     st.title("Weekly Itemwise Sales Dashboard")
     st.caption("Quantity uses cleaned business units. Daily and weekday averages include zero-sale dates in the selected period.")
@@ -307,16 +329,16 @@ def production_page():
         st.divider()
         st.caption("The downloaded Monday-Sunday pattern includes a fixed 10% production increase.")
         chosen = st.multiselect("Production item", sorted(data.item_name.unique()))
+        st.header("Person segregation")
+        handlers = st.multiselect("Handled by", sorted(data.handler.dropna().unique()), key="dispatch_handlers")
     if chosen:
         data = data[data.item_name.isin(chosen)]
-    daily = data.groupby(["transfer_date", "item_name", "weekday"], as_index=False).quantity_delivered.sum()
-    weekly = daily.assign(week_start=daily.transfer_date - pd.to_timedelta(daily.transfer_date.dt.dayofweek, unit="D")).groupby(["week_start", "item_name"], as_index=False).quantity_delivered.sum().rename(columns={"quantity_delivered": "Weekly Quantity"})
-    benchmark = weekly.groupby("item_name")["Weekly Quantity"].agg(Average_Weekly="mean", Median_Weekly="median", P75_Weekly=lambda values: values.quantile(.75), P90_Weekly=lambda values: values.quantile(.90), Min_Weekly="min", Max_Weekly="max").reset_index()
-    benchmark["Recommended Weekly Production"] = np.ceil(benchmark.P75_Weekly * 1.10).astype(int)
-    day_benchmark = daily.groupby(["item_name", "weekday"])["quantity_delivered"].agg(Average="mean", Median="median", P75=lambda values: values.quantile(.75), P90=lambda values: values.quantile(.90)).reset_index()
-    day_benchmark.weekday = pd.Categorical(day_benchmark.weekday, categories=WEEKDAYS, ordered=True)
-    day_benchmark = day_benchmark.sort_values(["item_name", "weekday"])
-    matrix = day_benchmark.pivot(index="item_name", columns="weekday", values="Median").reindex(columns=WEEKDAYS).reset_index()
+    if handlers:
+        data = data[data.handler.isin(handlers)]
+    if data.empty:
+        st.warning("No dispatch data matches these filters.")
+        return
+    benchmark, day_benchmark, matrix = dispatch_outputs(data)
     st.subheader("Recommended weekly production")
     st.dataframe(benchmark.round(0), hide_index=True, width="stretch")
     for day, tab in zip(WEEKDAYS, st.tabs(WEEKDAYS)):
@@ -327,12 +349,58 @@ def production_page():
     st.download_button("Download Monday-Sunday pattern (+10%)", download_pattern(matrix, 10), "monday_sunday_production_pattern_plus_10.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
-page = st.sidebar.radio("Page", ["Sales dashboard", "Dispatch & production"])
+def summary_page():
+    st.title("Summary")
+    st.caption("Select a planning weekday. Summary values use the weekday two days later: Monday → Wednesday, Tuesday → Thursday, and so on.")
+    selected_day = st.selectbox("Planning weekday", WEEKDAYS, key="summary_planning_day")
+    summary_day = WEEKDAYS[(WEEKDAYS.index(selected_day) + 2) % len(WEEKDAYS)]
+    adjustment_percent = st.number_input("Increase production and dispatch by (%)", min_value=-100.0, max_value=500.0, value=0.0, step=1.0, key="summary_adjustment")
+    st.info(f"Selected {selected_day}: showing {summary_day} sales, quantity, production and dispatch values.")
+
+    dispatch = dispatch_data()
+    if dispatch.empty:
+        st.warning("Upload dispatch data to create the Production and Dispatch columns.")
+        return
+    _, _, pattern = dispatch_outputs(dispatch)
+    production = pattern[["item_name", summary_day]].copy().rename(columns={"item_name": "Item name", summary_day: "Production"})
+    production["Production"] = np.ceil(pd.to_numeric(production["Production"], errors="coerce").fillna(0) * (1 + adjustment_percent / 100))
+    production = production.sort_values("Item name")
+
+    st.subheader("Production")
+    st.caption(f"{summary_day} Monday-Sunday pattern with {adjustment_percent:g}% adjustment.")
+    st.dataframe(production, hide_index=True, width="stretch")
+
+    sales = sales_data()
+    dispatch_values = production.rename(columns={"Production": "Dispatch"})
+    if sales.empty:
+        combined = dispatch_values.copy()
+        combined.insert(1, "Sales", 0.0)
+        combined.insert(2, "Quantity", 0.0)
+    else:
+        sales_scope = sales[(sales.weekday.eq(summary_day)) & (sales.status.eq("Completed"))]
+        weekday_occurrences = sales.loc[sales.weekday.eq(summary_day), "date"].dt.date.nunique()
+        if weekday_occurrences:
+            sales_metrics = sales_scope.groupby("item_name", as_index=False).agg(
+                Sales=("net_sales", lambda values: values.abs().sum() / weekday_occurrences),
+                Quantity=("analysis_quantity", lambda values: values.abs().sum() / weekday_occurrences),
+            ).rename(columns={"item_name": "Item name"})
+        else:
+            sales_metrics = pd.DataFrame(columns=["Item name", "Sales", "Quantity"])
+        combined = sales_metrics.merge(dispatch_values, on="Item name", how="outer").fillna(0)
+    combined = combined[["Item name", "Sales", "Quantity", "Dispatch"]].sort_values("Item name")
+    st.subheader("Sales and dispatch")
+    st.caption(f"Sales and quantity are average {summary_day} values across every {summary_day} in stored completed sales data. Dispatch includes the {adjustment_percent:g}% adjustment.")
+    st.dataframe(combined.round(2), hide_index=True, width="stretch")
+
+
+page = st.sidebar.radio("Page", ["Sales dashboard", "Dispatch & production", "Summary"])
 try:
     if page == "Sales dashboard":
         sales_page()
-    else:
+    elif page == "Dispatch & production":
         production_page()
+    else:
+        summary_page()
 except DatabaseConnectionError as error:
     st.error(str(error))
     st.info("Your existing local data remains safe. Correct the Streamlit DATABASE_URL Secret, save it, and reboot the app.")

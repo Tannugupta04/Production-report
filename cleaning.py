@@ -51,7 +51,7 @@ def init_database() -> None:
         conn.execute("CREATE TABLE IF NOT EXISTS uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, sales_filename TEXT, cancel_filename TEXT, row_count INTEGER)")
         conn.execute("CREATE TABLE IF NOT EXISTS cleaned_transactions (batch_id TEXT, outlet TEXT, invoice TEXT, date TEXT, order_source TEXT, item_name TEXT, quantity REAL, unit TEXT, net_sales REAL, category TEXT, customer_name TEXT, customer_phone TEXT, status TEXT, hour REAL, handler TEXT, weekday TEXT, month TEXT, week_number INTEGER, sales_impact REAL, quantity_impact REAL)")
         conn.execute("CREATE TABLE IF NOT EXISTS dispatch_uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, filename TEXT, row_count INTEGER)")
-        conn.execute("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered REAL, weekday TEXT, week_start TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered REAL, weekday TEXT, week_start TEXT, handler TEXT)")
         for column, definition in (("handler", "TEXT"), ("unit", "TEXT DEFAULT 'units'")):
             try:
                 conn.execute(f"ALTER TABLE cleaned_transactions ADD COLUMN {column} {definition}")
@@ -165,6 +165,7 @@ def clean_dispatch_upload(uploaded_file) -> pd.DataFrame:
     data["source_item_name"] = data["item_name"].astype(str).str.strip()
     data["item_name"] = normalise_names(data["item_name"]); data["quantity_delivered"] = pd.to_numeric(data["quantity_delivered"], errors="coerce"); data["transfer_date"] = pd.to_datetime(data["transfer_date"], errors="coerce").dt.normalize()
     data = data.dropna().loc[lambda frame: frame["quantity_delivered"].gt(0)].copy(); data["weekday"] = data["transfer_date"].dt.day_name(); data["week_start"] = data["transfer_date"] - pd.to_timedelta(data["transfer_date"].dt.dayofweek, unit="D")
+    data["handler"] = _handler(data)
     return data.reset_index(drop=True)
 
 
@@ -217,7 +218,7 @@ if _EXTERNAL_URL:
                 conn.execute(text("CREATE TABLE IF NOT EXISTS uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, sales_filename TEXT, cancel_filename TEXT, row_count INTEGER)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_transactions (batch_id TEXT, outlet TEXT, invoice TEXT, date TEXT, order_source TEXT, item_name TEXT, quantity DOUBLE PRECISION, unit TEXT, net_sales DOUBLE PRECISION, category TEXT, customer_name TEXT, customer_phone TEXT, status TEXT, hour DOUBLE PRECISION, handler TEXT, weekday TEXT, month TEXT, week_number INTEGER, sales_impact DOUBLE PRECISION, quantity_impact DOUBLE PRECISION)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dispatch_uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, filename TEXT, row_count INTEGER)"))
-                conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered DOUBLE PRECISION, weekday TEXT, week_start TEXT)"))
+                conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered DOUBLE PRECISION, weekday TEXT, week_start TEXT, handler TEXT)"))
         except OperationalError as error:
             provider_message = str(error).lower()
             if "password authentication failed" in provider_message:
@@ -313,10 +314,15 @@ def init_database():
     if _EXTERNAL_URL:
         with _ENGINE.begin() as conn:
             conn.execute(text("ALTER TABLE cleaned_transactions ADD COLUMN IF NOT EXISTS analysis_quantity DOUBLE PRECISION"))
+            conn.execute(text("ALTER TABLE cleaned_dispatch ADD COLUMN IF NOT EXISTS handler TEXT"))
     else:
         with _connect() as conn:
             try:
                 conn.execute("ALTER TABLE cleaned_transactions ADD COLUMN analysis_quantity REAL")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE cleaned_dispatch ADD COLUMN handler TEXT")
             except sqlite3.OperationalError:
                 pass
 
@@ -329,4 +335,16 @@ def load_data():
         loaded["item_name"] = normalise_names(loaded["item_name"])
         loaded["handler"] = _handler(loaded)
     return apply_production_measurements(loaded)
+
+
+_base_load_dispatch_data = load_dispatch_data
+
+
+def load_dispatch_data():
+    """Load older dispatch rows too, assigning their current handler mapping."""
+    loaded = _base_load_dispatch_data()
+    if not loaded.empty:
+        loaded["item_name"] = normalise_names(loaded["item_name"])
+        loaded["handler"] = _handler(loaded)
+    return loaded
 
