@@ -357,6 +357,18 @@ def production_page():
 
 def summary_page():
     st.title("Summary")
+    summary_item_names = {
+        "butter chicken": "Butter Chicken",
+        "butter chicken 6 piece": "Butter Chicken",
+        "soya tawa masala": "Soya Tawa Masala Gravy",
+    }
+
+    def rename_summary_items(frame):
+        result = frame.copy()
+        item_keys = result["Item name"].astype(str).str.strip().str.casefold()
+        result["Item name"] = item_keys.map(summary_item_names).fillna(result["Item name"])
+        return result
+
     st.caption("Select a planning weekday. Summary values use the weekday two days later: Monday → Wednesday, Tuesday → Thursday, and so on.")
     dispatch = dispatch_data()
     with st.sidebar:
@@ -376,7 +388,8 @@ def summary_page():
     _, _, pattern = dispatch_outputs(dispatch)
     production = pattern[["item_name", "unit", summary_day]].copy().rename(columns={"item_name": "Item name", "unit": "UOM", summary_day: "Production"})
     production["Production"] = np.ceil(pd.to_numeric(production["Production"], errors="coerce").fillna(0) * (1 + adjustment_percent / 100)).astype(int)
-    production = production.sort_values("Item name")
+    production = rename_summary_items(production)
+    production = production.groupby(["Item name", "UOM"], as_index=False, dropna=False)["Production"].sum().sort_values("Item name")
 
     st.subheader("Production")
     st.caption(f"{summary_day} Monday-Sunday pattern with {adjustment_percent:g}% adjustment.")
@@ -408,6 +421,8 @@ def summary_page():
                 Sales=("net_sales", lambda values: values.abs().sum() / weekday_occurrences),
                 Quantity=("analysis_quantity", lambda values: values.abs().sum() / weekday_occurrences),
             ).rename(columns={"item_name": "Item name", "unit": "UOM"})
+            sales_metrics = rename_summary_items(sales_metrics)
+            sales_metrics = sales_metrics.groupby(["Item name", "UOM"], as_index=False, dropna=False)[["Sales", "Quantity"]].sum()
         else:
             sales_metrics = pd.DataFrame(columns=["Item name", "UOM", "Sales", "Quantity"])
         combined = sales_metrics.merge(dispatch_values, on=["Item name", "UOM"], how="outer").fillna(0)
