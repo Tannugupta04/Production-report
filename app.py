@@ -22,6 +22,17 @@ from cleaning import (
 
 st.set_page_config(page_title="Weekly Itemwise Sales", page_icon="Sales", layout="wide")
 WEEKDAYS = list(calendar.day_name)
+FINAL_ITEM_ORDER = [
+    "Chicken Malai Tikka", "Chicken Peri Peri Tikka", "Chicken Spicy Tikka", "Chicken Tikka",
+    "Fish Tikka", "Soya Achari", "Soya Tikka", "Paneer Tikka", "Chicken Seekh Kebab",
+    "Mutton Kakori Kebab", "Mutton Seekh Kebab", "Veg Haryali Kebab", "Green Chutney Premix Big",
+    "Green Chutney Premix Small", "Paneer Masala", "Chicken Tikka Masala", "Mutton Seekh Masala",
+    "Mutton Kakori Masala", "Teekhi Chutney Premix", "Kakori Paste", "Hung Curd", "Chicken Biryani",
+    "Mutton Biryani", "Non-Veg achari biryani", "Veg achari biryani", "Veg Biryani", "Chicken Korma",
+    "Mutton Haleem", "Mutton Korma", "Phirni", "Normal Biryani Mist", "Biryani achari MIST",
+    "Butter Chicken", "Dal Makhani", "Soya Tawa Masala", "Paneer Zaika", "Brown Onion",
+    "Mutton Nihari", "Shahi Tukda", "Raita Premix", "Taftaan", "Gulab Jamun", "Butter Naan",
+]
 
 
 @st.cache_resource(show_spinner=False)
@@ -92,6 +103,39 @@ def download_pattern(pattern, adjustment_percent=10):
             for cell in row[1:]:
                 if isinstance(cell.value, (int, float)):
                     cell.number_format = "#,##0"
+    return out.getvalue()
+
+
+def _final_item_order(data):
+    """Keep Final reports in the operational sequence requested by the business."""
+    ordered = data[data["Item name"].isin(FINAL_ITEM_ORDER)].copy()
+    ordered["Item name"] = pd.Categorical(ordered["Item name"], categories=FINAL_ITEM_ORDER, ordered=True)
+    return ordered.sort_values(["Item name", "Outlet"]).reset_index(drop=True)
+
+
+def download_final_report(production, dispatch):
+    """Create the outlet-column Excel layout used for final production planning."""
+    out = io.BytesIO()
+    reports = (("Production", production, "Production"), ("Dispatch", dispatch, "Dispatch"))
+    with pd.ExcelWriter(out, engine="openpyxl") as writer:
+        for sheet_name, source, value_column in reports:
+            report = source.copy()
+            report["Item name"] = pd.Categorical(report["Item name"], categories=FINAL_ITEM_ORDER, ordered=True)
+            pivot = report.pivot_table(index=["Item name", "UOM"], columns="Outlet", values=value_column, aggfunc="sum", fill_value=0).reset_index()
+            pivot = pivot.sort_values(["Item name", "UOM"])
+            pivot.columns.name = None
+            pivot.to_excel(writer, sheet_name=sheet_name, index=False, startrow=3)
+            _style_sheet(
+                writer.sheets[sheet_name],
+                f"Final {sheet_name} — P75 by Outlet",
+                "P75 weekly requirement. Rows are items; columns are Transfer Location outlets.",
+                4,
+                {1: 34, 2: 12, **{column: 15 for column in range(3, len(pivot.columns) + 1)}},
+            )
+            for row in writer.sheets[sheet_name].iter_rows(min_row=5):
+                for cell in row[2:]:
+                    if isinstance(cell.value, (int, float)):
+                        cell.number_format = "#,##0"
     return out.getvalue()
 
 
@@ -446,14 +490,73 @@ def summary_page():
     )
 
 
-page = st.sidebar.radio("Page", ["Sales dashboard", "Dispatch & production", "Summary"])
+def final_page():
+    st.title("Final")
+    st.caption("Outlet-wise weekly P75 requirement from dispatch Transfer Location. No person/handler filter is applied on this page.")
+    dispatch = dispatch_data()
+    if dispatch.empty:
+        st.info("Upload a dispatch file with Item Name, Quantity Delivered, Transfer Date and Transfer Location.")
+        return
+
+    benchmark, _, _ = dispatch_outputs(dispatch)
+    values = benchmark[["outlet", "item_name", "unit", "P75_Weekly"]].copy()
+    values["P75_Weekly"] = np.ceil(pd.to_numeric(values["P75_Weekly"], errors="coerce").fillna(0)).astype(int)
+    values = values.rename(columns={"outlet": "Outlet", "item_name": "Item name", "unit": "UOM"})
+    values = _final_item_order(values)
+    if values.empty:
+        st.warning("None of the configured Final-report items are present in the stored dispatch data.")
+        return
+
+    production = values.rename(columns={"P75_Weekly": "Production"})[["Outlet", "Item name", "UOM", "Production"]]
+    dispatch_table = values.rename(columns={"P75_Weekly": "Dispatch"})[["Item name", "Outlet", "Dispatch", "UOM"]]
+
+    st.subheader("Production")
+    st.caption("Production is the outlet-wise weekly P75 quantity, rounded up to a whole unit.")
+    st.dataframe(
+        production,
+        hide_index=True,
+        width="stretch",
+        height=520,
+        column_config={
+            "Outlet": st.column_config.TextColumn("Outlet", width="medium"),
+            "Item name": st.column_config.TextColumn("Item name", width="large"),
+            "UOM": st.column_config.TextColumn("UOM", width="small"),
+            "Production": st.column_config.NumberColumn("Production (P75)", format="%,d"),
+        },
+    )
+
+    st.subheader("Dispatch")
+    st.caption("Dispatch uses the same outlet-wise weekly P75 quantity.")
+    st.dataframe(
+        dispatch_table,
+        hide_index=True,
+        width="stretch",
+        height=520,
+        column_config={
+            "Item name": st.column_config.TextColumn("Item name", width="large"),
+            "Outlet": st.column_config.TextColumn("Outlet", width="medium"),
+            "UOM": st.column_config.TextColumn("UOM", width="small"),
+            "Dispatch": st.column_config.NumberColumn("Dispatch (P75)", format="%,d"),
+        },
+    )
+    st.download_button(
+        "Download Final P75 report (Excel)",
+        download_final_report(production, dispatch_table),
+        "final_outletwise_p75_report.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+page = st.sidebar.radio("Page", ["Sales dashboard", "Dispatch & production", "Summary", "Final"])
 try:
     if page == "Sales dashboard":
         sales_page()
     elif page == "Dispatch & production":
         production_page()
-    else:
+    elif page == "Summary":
         summary_page()
+    else:
+        final_page()
 except DatabaseConnectionError as error:
     st.error(str(error))
     st.info("Your existing local data remains safe. Correct the Streamlit DATABASE_URL Secret, save it, and reboot the app.")
