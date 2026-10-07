@@ -226,7 +226,15 @@ def save_dispatch_batch(data: pd.DataFrame, uploaded_file) -> tuple[str, bool]:
     with _connect() as conn:
         existing = conn.execute("SELECT 1 FROM dispatch_uploads WHERE batch_id = ?", (batch_id,)).fetchone()
         if existing:
-            has_outlet = conn.execute("SELECT 1 FROM cleaned_dispatch WHERE batch_id = ? AND outlet IS NOT NULL AND TRIM(outlet) <> '' LIMIT 1", (batch_id,)).fetchone()
+            # Older uploads did not retain Transfer Location and may have been
+            # displayed as "Outlet not captured". Re-uploading the same source
+            # file must replace those rows with the now-available outlet codes.
+            has_outlet = conn.execute(
+                "SELECT 1 FROM cleaned_dispatch WHERE batch_id = ? "
+                "AND outlet IS NOT NULL AND TRIM(outlet) <> '' "
+                "AND LOWER(TRIM(outlet)) <> 'outlet not captured' LIMIT 1",
+                (batch_id,),
+            ).fetchone()
             if has_outlet: return batch_id, False
             conn.execute("DELETE FROM cleaned_dispatch WHERE batch_id = ?", (batch_id,))
             conn.execute("UPDATE dispatch_uploads SET uploaded_at = ?, filename = ?, row_count = ? WHERE batch_id = ?", (datetime.now(timezone.utc).isoformat(), uploaded_file.name, len(data), batch_id))
@@ -315,7 +323,13 @@ if _EXTERNAL_URL:
         with _ENGINE.begin() as conn:
             existing = conn.execute(text("SELECT 1 FROM dispatch_uploads WHERE batch_id = :id"), {"id": batch_id}).first()
             if existing:
-                has_outlet = conn.execute(text("SELECT 1 FROM cleaned_dispatch WHERE batch_id = :id AND outlet IS NOT NULL AND BTRIM(outlet) <> '' LIMIT 1"), {"id": batch_id}).first()
+                # Allow the original file to refresh historic rows that were
+                # saved before Transfer Location was captured.
+                has_outlet = conn.execute(text(
+                    "SELECT 1 FROM cleaned_dispatch WHERE batch_id = :id "
+                    "AND outlet IS NOT NULL AND BTRIM(outlet) <> '' "
+                    "AND LOWER(BTRIM(outlet)) <> 'outlet not captured' LIMIT 1"
+                ), {"id": batch_id}).first()
                 if has_outlet: return batch_id, False
                 conn.execute(text("DELETE FROM cleaned_dispatch WHERE batch_id = :id"), {"id": batch_id})
                 conn.execute(text("UPDATE dispatch_uploads SET uploaded_at = :time, filename = :name, row_count = :rows WHERE batch_id = :id"), {"id": batch_id, "time": datetime.now(timezone.utc).isoformat(), "name": uploaded_file.name, "rows": len(data)})
