@@ -148,28 +148,29 @@ def download_sales_report(filtered, scope, start, end, statuses):
 
 def dispatch_outputs(data):
     """Calculate the shared production benchmarks and Monday-Sunday median pattern."""
-    item_units = data[["item_name", "outlet", "unit"]].drop_duplicates(subset=["item_name", "outlet"])
-    daily = data.groupby(["transfer_date", "outlet", "item_name", "weekday"], as_index=False).quantity_delivered.sum()
+    item_units = data[["item_name", "unit"]].drop_duplicates(subset=["item_name"])
+    daily = data.groupby(["transfer_date", "item_name", "weekday"], as_index=False).quantity_delivered.sum()
     weekly = (
         daily.assign(week_start=daily.transfer_date - pd.to_timedelta(daily.transfer_date.dt.dayofweek, unit="D"))
-        .groupby(["week_start", "outlet", "item_name"], as_index=False).quantity_delivered.sum()
+        .groupby(["week_start", "item_name"], as_index=False).quantity_delivered.sum()
         .rename(columns={"quantity_delivered": "Weekly Quantity"})
     )
-    benchmark = weekly.groupby(["outlet", "item_name"])["Weekly Quantity"].agg(
+    benchmark = weekly.groupby("item_name")["Weekly Quantity"].agg(
         Average_Weekly="mean", Median_Weekly="median", P75_Weekly=lambda values: values.quantile(.75),
         P90_Weekly=lambda values: values.quantile(.90), Min_Weekly="min", Max_Weekly="max",
     ).reset_index()
     benchmark["Recommended Weekly Production"] = np.ceil(benchmark.P75_Weekly * 1.10).astype(int)
-    benchmark = benchmark.merge(item_units, on=["outlet", "item_name"], how="left")
-    benchmark = benchmark[["item_name", "outlet", "unit", *[column for column in benchmark.columns if column not in {"item_name", "outlet", "unit"}]]]
-    day_benchmark = daily.groupby(["outlet", "item_name", "weekday"])["quantity_delivered"].agg(
+    benchmark = benchmark.merge(item_units, on="item_name", how="left")
+    benchmark = benchmark[["item_name", "unit", *[column for column in benchmark.columns if column not in {"item_name", "unit"}]]]
+    day_benchmark = daily.groupby(["item_name", "weekday"])["quantity_delivered"].agg(
         Average="mean", Median="median", P75=lambda values: values.quantile(.75), P90=lambda values: values.quantile(.90),
     ).reset_index()
     day_benchmark.weekday = pd.Categorical(day_benchmark.weekday, categories=WEEKDAYS, ordered=True)
-    day_benchmark = day_benchmark.merge(item_units, on=["outlet", "item_name"], how="left").sort_values(["outlet", "item_name", "weekday"])
-    day_benchmark = day_benchmark[["item_name", "outlet", "unit", *[column for column in day_benchmark.columns if column not in {"item_name", "outlet", "unit"}]]]
-    matrix = day_benchmark.pivot(index=["item_name", "outlet", "unit"], columns="weekday", values="Median").reindex(columns=WEEKDAYS).reset_index()
-    matrix = matrix[["item_name", "outlet", "unit", *WEEKDAYS]]
+    day_benchmark = day_benchmark.merge(item_units, on="item_name", how="left").sort_values(["item_name", "weekday"])
+    day_benchmark = day_benchmark[["item_name", "unit", *[column for column in day_benchmark.columns if column not in {"item_name", "unit"}]]]
+    matrix = day_benchmark.pivot(index="item_name", columns="weekday", values="Median").reindex(columns=WEEKDAYS).reset_index()
+    matrix = matrix.merge(item_units, on="item_name", how="left")
+    matrix = matrix[["item_name", "unit", *WEEKDAYS]]
     return benchmark, day_benchmark, matrix
 
 
@@ -333,14 +334,11 @@ def production_page():
     with st.sidebar:
         st.divider()
         st.caption("The downloaded Monday-Sunday pattern includes a fixed 10% production increase.")
-        outlets = st.multiselect("Outlet", sorted(data.outlet.dropna().unique()), key="dispatch_outlets")
         chosen = st.multiselect("Production item", sorted(data.item_name.unique()))
         st.header("Person segregation")
         handlers = st.multiselect("Handled by", sorted(data.handler.dropna().unique()), key="dispatch_handlers")
     if chosen:
         data = data[data.item_name.isin(chosen)]
-    if outlets:
-        data = data[data.outlet.isin(outlets)]
     if handlers:
         data = data[data.handler.isin(handlers)]
     if data.empty:
@@ -352,7 +350,7 @@ def production_page():
     for day, tab in zip(WEEKDAYS, st.tabs(WEEKDAYS)):
         with tab:
             view = day_benchmark[day_benchmark.weekday.eq(day)].sort_values("P75", ascending=False)
-            st.plotly_chart(px.bar(view, x="item_name", y="P75", color="outlet", barmode="group", title=f"{day} production benchmark (P75) by outlet").update_xaxes(tickangle=-45), width="stretch")
+            st.plotly_chart(px.bar(view, x="item_name", y="P75", title=f"{day} production benchmark (P75)").update_xaxes(tickangle=-45), width="stretch")
             st.dataframe(view.round(2), hide_index=True, width="stretch")
     st.download_button("Download Monday-Sunday pattern (+10%)", download_pattern(matrix, 10), "monday_sunday_production_pattern_plus_10.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
@@ -376,7 +374,6 @@ def summary_page():
     with st.sidebar:
         st.divider()
         st.header("Summary filters")
-        summary_outlets = st.multiselect("Outlet", sorted(dispatch.outlet.dropna().unique()) if not dispatch.empty else [], key="summary_outlets")
         summary_handlers = st.multiselect("Handled by", sorted(dispatch.handler.dropna().unique()) if not dispatch.empty else [], key="summary_handlers")
     selected_day = st.selectbox("Planning weekday", WEEKDAYS, key="summary_planning_day")
     summary_day = WEEKDAYS[(WEEKDAYS.index(selected_day) + 2) % len(WEEKDAYS)]
@@ -385,16 +382,14 @@ def summary_page():
 
     if summary_handlers:
         dispatch = dispatch[dispatch.handler.isin(summary_handlers)]
-    if summary_outlets:
-        dispatch = dispatch[dispatch.outlet.isin(summary_outlets)]
     if dispatch.empty:
         st.warning("No dispatch data matches the selected person filter.")
         return
     _, _, pattern = dispatch_outputs(dispatch)
-    production = pattern[["item_name", "outlet", "unit", summary_day]].copy().rename(columns={"item_name": "Item name", "outlet": "Outlet", "unit": "UOM", summary_day: "Production"})
+    production = pattern[["item_name", "unit", summary_day]].copy().rename(columns={"item_name": "Item name", "unit": "UOM", summary_day: "Production"})
     production["Production"] = np.ceil(pd.to_numeric(production["Production"], errors="coerce").fillna(0) * (1 + adjustment_percent / 100)).astype(int)
     production = rename_summary_items(production)
-    production = production.groupby(["Item name", "Outlet", "UOM"], as_index=False, dropna=False)["Production"].sum().sort_values(["Outlet", "Item name"])
+    production = production.groupby(["Item name", "UOM"], as_index=False, dropna=False)["Production"].sum().sort_values("Item name")
 
     st.subheader("Production")
     st.caption(f"{summary_day} Monday-Sunday pattern with {adjustment_percent:g}% adjustment.")
@@ -404,7 +399,6 @@ def summary_page():
         width="stretch",
         column_config={
             "Item name": st.column_config.TextColumn("Item name", width="large"),
-            "Outlet": st.column_config.TextColumn("Outlet", width="medium"),
             "UOM": st.column_config.TextColumn("UOM", width="small"),
             "Production": st.column_config.NumberColumn("Production", format="%,d"),
         },
@@ -420,21 +414,19 @@ def summary_page():
         sales_scope = sales[(sales.weekday.eq(summary_day)) & (sales.status.eq("Completed"))]
         if summary_handlers:
             sales_scope = sales_scope[sales_scope.handler.isin(summary_handlers)]
-        if summary_outlets:
-            sales_scope = sales_scope[sales_scope.outlet.isin(summary_outlets)]
         sales_scope = sales_scope.assign(unit=sales_scope["unit"].replace("units", ""))
         weekday_occurrences = sales.loc[sales.weekday.eq(summary_day), "date"].dt.date.nunique()
         if weekday_occurrences:
-            sales_metrics = sales_scope.groupby(["item_name", "outlet", "unit"], as_index=False).agg(
+            sales_metrics = sales_scope.groupby(["item_name", "unit"], as_index=False).agg(
                 Sales=("net_sales", lambda values: values.abs().sum() / weekday_occurrences),
                 Quantity=("analysis_quantity", lambda values: values.abs().sum() / weekday_occurrences),
-            ).rename(columns={"item_name": "Item name", "outlet": "Outlet", "unit": "UOM"})
+            ).rename(columns={"item_name": "Item name", "unit": "UOM"})
             sales_metrics = rename_summary_items(sales_metrics)
-            sales_metrics = sales_metrics.groupby(["Item name", "Outlet", "UOM"], as_index=False, dropna=False)[["Sales", "Quantity"]].sum()
+            sales_metrics = sales_metrics.groupby(["Item name", "UOM"], as_index=False, dropna=False)[["Sales", "Quantity"]].sum()
         else:
-            sales_metrics = pd.DataFrame(columns=["Item name", "Outlet", "UOM", "Sales", "Quantity"])
-        combined = sales_metrics.merge(dispatch_values, on=["Item name", "Outlet", "UOM"], how="outer").fillna(0)
-    combined = combined[["Item name", "Outlet", "UOM", "Sales", "Quantity", "Dispatch"]].sort_values(["Outlet", "Item name"])
+            sales_metrics = pd.DataFrame(columns=["Item name", "UOM", "Sales", "Quantity"])
+        combined = sales_metrics.merge(dispatch_values, on=["Item name", "UOM"], how="outer").fillna(0)
+    combined = combined[["Item name", "UOM", "Sales", "Quantity", "Dispatch"]].sort_values("Item name")
     combined[["Sales", "Quantity", "Dispatch"]] = combined[["Sales", "Quantity", "Dispatch"]].round(0).astype(int)
     st.subheader("Sales and dispatch")
     st.markdown(f"Sales and quantity are average **:blue[{summary_day}]** values across every **:blue[{summary_day}]** in stored completed sales data. Dispatch includes the {adjustment_percent:g}% adjustment.")
@@ -444,7 +436,6 @@ def summary_page():
         width="stretch",
         column_config={
             "Item name": st.column_config.TextColumn("Item name", width="large"),
-            "Outlet": st.column_config.TextColumn("Outlet", width="medium"),
             "UOM": st.column_config.TextColumn("UOM", width="small"),
             "Sales": st.column_config.NumberColumn("Sales (INR)", format="%,d"),
             "Quantity": st.column_config.NumberColumn("Quantity", format="%,d"),
@@ -453,53 +444,14 @@ def summary_page():
     )
 
 
-def summary_one_page():
-    st.title("Summary 1: Outlet-wise planning")
-    st.caption("This page shows the same two-day weekday offset as Summary, but each outlet is a separate column.")
-    dispatch = dispatch_data()
-    with st.sidebar:
-        st.divider()
-        st.header("Summary 1 filters")
-        outlets = st.multiselect("Outlet", sorted(dispatch.outlet.dropna().unique()) if not dispatch.empty else [], key="summary_one_outlets")
-        handlers = st.multiselect("Handled by", sorted(dispatch.handler.dropna().unique()) if not dispatch.empty else [], key="summary_one_handlers")
-    selected_day = st.selectbox("Planning weekday", WEEKDAYS, key="summary_one_planning_day")
-    summary_day = WEEKDAYS[(WEEKDAYS.index(selected_day) + 2) % len(WEEKDAYS)]
-    adjustment_percent = st.number_input("Increase production and dispatch by (%)", min_value=-100.0, max_value=500.0, value=0.0, step=1.0, key="summary_one_adjustment")
-    st.info(f"Selected {selected_day}: showing outlet-wise {summary_day} production and dispatch values.")
-    if handlers:
-        dispatch = dispatch[dispatch.handler.isin(handlers)]
-    if outlets:
-        dispatch = dispatch[dispatch.outlet.isin(outlets)]
-    if dispatch.empty:
-        st.warning("No dispatch data matches these filters.")
-        return
-    _, _, pattern = dispatch_outputs(dispatch)
-    values = pattern[["item_name", "outlet", "unit", summary_day]].copy().rename(columns={"item_name": "Item name", "outlet": "Outlet", "unit": "UOM", summary_day: "Value"})
-    values["Value"] = np.ceil(pd.to_numeric(values["Value"], errors="coerce").fillna(0) * (1 + adjustment_percent / 100)).astype(int)
-
-    production = values.pivot_table(index=["Item name", "UOM"], columns="Outlet", values="Value", aggfunc="sum", fill_value=0).reset_index()
-    production.columns.name = None
-    st.subheader("Production by outlet")
-    st.caption(f"{summary_day} production values, with {adjustment_percent:g}% adjustment. Items are rows; outlets are columns.")
-    st.dataframe(production, hide_index=True, width="stretch", height=520)
-
-    dispatch_pivot = values.pivot_table(index=["Item name", "UOM"], columns="Outlet", values="Value", aggfunc="sum", fill_value=0).reset_index()
-    dispatch_pivot.columns.name = None
-    st.subheader("Dispatch by outlet")
-    st.caption(f"{summary_day} dispatch quantities using the current Monday-Sunday pattern logic. Items are rows; outlets are columns.")
-    st.dataframe(dispatch_pivot, hide_index=True, width="stretch", height=520)
-
-
-page = st.sidebar.radio("Page", ["Sales dashboard", "Dispatch & production", "Summary", "Summary 1"])
+page = st.sidebar.radio("Page", ["Sales dashboard", "Dispatch & production", "Summary"])
 try:
     if page == "Sales dashboard":
         sales_page()
     elif page == "Dispatch & production":
         production_page()
-    elif page == "Summary":
-        summary_page()
     else:
-        summary_one_page()
+        summary_page()
 except DatabaseConnectionError as error:
     st.error(str(error))
     st.info("Your existing local data remains safe. Correct the Streamlit DATABASE_URL Secret, save it, and reboot the app.")
