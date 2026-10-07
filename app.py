@@ -113,7 +113,7 @@ def _final_item_order(data):
     return ordered.sort_values(["Item name", "Outlet"]).reset_index(drop=True)
 
 
-def download_final_report(production, dispatch):
+def download_final_report(production, dispatch, summary_day, adjustment_percent):
     """Create the outlet-column Excel layout used for final production planning."""
     out = io.BytesIO()
     reports = (("Production", production, "Production"), ("Dispatch", dispatch, "Dispatch"))
@@ -128,7 +128,7 @@ def download_final_report(production, dispatch):
             _style_sheet(
                 writer.sheets[sheet_name],
                 f"Final {sheet_name} — P75 by Outlet",
-                "P75 weekly requirement. Rows are items; columns are Transfer Location outlets.",
+                f"{summary_day} P75 by Transfer Location, with {adjustment_percent:g}% adjustment. Rows are items; columns are outlets.",
                 4,
                 {1: 34, 2: 12, **{column: 15 for column in range(3, len(pivot.columns) + 1)}},
             )
@@ -492,26 +492,31 @@ def summary_page():
 
 def final_page():
     st.title("Final")
-    st.caption("Outlet-wise weekly P75 requirement from dispatch Transfer Location. No person/handler filter is applied on this page.")
+    st.caption("Outlet-wise weekday P75 requirement from dispatch Transfer Location. No person/handler filter is applied on this page.")
     dispatch = dispatch_data()
     if dispatch.empty:
         st.info("Upload a dispatch file with Item Name, Quantity Delivered, Transfer Date and Transfer Location.")
         return
 
-    benchmark, _, _ = dispatch_outputs(dispatch)
-    values = benchmark[["outlet", "item_name", "unit", "P75_Weekly"]].copy()
-    values["P75_Weekly"] = np.ceil(pd.to_numeric(values["P75_Weekly"], errors="coerce").fillna(0)).astype(int)
+    selected_day = st.selectbox("Planning weekday", WEEKDAYS, key="final_planning_day")
+    summary_day = WEEKDAYS[(WEEKDAYS.index(selected_day) + 2) % len(WEEKDAYS)]
+    adjustment_percent = st.number_input("Increase production and dispatch by (%)", min_value=-100.0, max_value=500.0, value=0.0, step=1.0, key="final_adjustment")
+    st.info(f"Selected {selected_day}: showing outlet-wise {summary_day} P75 production and dispatch values.")
+
+    _, day_benchmark, _ = dispatch_outputs(dispatch)
+    values = day_benchmark.loc[day_benchmark.weekday.eq(summary_day), ["outlet", "item_name", "unit", "P75"]].copy()
+    values["P75"] = np.ceil(pd.to_numeric(values["P75"], errors="coerce").fillna(0) * (1 + adjustment_percent / 100)).astype(int)
     values = values.rename(columns={"outlet": "Outlet", "item_name": "Item name", "unit": "UOM"})
     values = _final_item_order(values)
     if values.empty:
         st.warning("None of the configured Final-report items are present in the stored dispatch data.")
         return
 
-    production = values.rename(columns={"P75_Weekly": "Production"})[["Outlet", "Item name", "UOM", "Production"]]
-    dispatch_table = values.rename(columns={"P75_Weekly": "Dispatch"})[["Item name", "Outlet", "Dispatch", "UOM"]]
+    production = values.rename(columns={"P75": "Production"})[["Outlet", "Item name", "UOM", "Production"]]
+    dispatch_table = values.rename(columns={"P75": "Dispatch"})[["Item name", "Outlet", "Dispatch", "UOM"]]
 
     st.subheader("Production")
-    st.caption("Production is the outlet-wise weekly P75 quantity, rounded up to a whole unit.")
+    st.caption(f"Production is the outlet-wise {summary_day} P75 quantity, with {adjustment_percent:g}% adjustment and rounded up to a whole unit.")
     st.dataframe(
         production,
         hide_index=True,
@@ -526,7 +531,7 @@ def final_page():
     )
 
     st.subheader("Dispatch")
-    st.caption("Dispatch uses the same outlet-wise weekly P75 quantity.")
+    st.caption(f"Dispatch uses the same outlet-wise {summary_day} P75 quantity and adjustment.")
     st.dataframe(
         dispatch_table,
         hide_index=True,
@@ -541,7 +546,7 @@ def final_page():
     )
     st.download_button(
         "Download Final P75 report (Excel)",
-        download_final_report(production, dispatch_table),
+        download_final_report(production, dispatch_table, summary_day, adjustment_percent),
         "final_outletwise_p75_report.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
