@@ -317,8 +317,7 @@ def production_page():
     with st.sidebar:
         st.header("Dispatch upload")
         upload = st.file_uploader("Dispatch file", type=["csv", "xlsx", "xls"], key="dispatch")
-        st.caption("To repair older rows marked **Outlet not captured**, upload the original dispatch file again. It refreshes that batch without adding duplicate quantities.")
-        if st.button("Clean and save / refresh dispatch data", type="primary", disabled=not upload):
+        if st.button("Clean and save dispatch data", type="primary", disabled=not upload):
             try:
                 cleaned = clean_dispatch_upload(upload)
                 batch_id, saved = save_dispatch_batch(cleaned, upload)
@@ -331,12 +330,6 @@ def production_page():
     if data.empty:
         st.info("Upload a dispatch file with Item Name, Quantity Delivered and Transfer Date.")
         return
-    missing_outlet_rows = int(data.outlet.eq("Outlet not captured").sum())
-    if missing_outlet_rows:
-        st.warning(
-            f"{missing_outlet_rows:,} stored dispatch rows do not have Transfer Location. "
-            "Upload the original source file again using the refresh button to assign outlet codes."
-        )
     with st.sidebar:
         st.divider()
         st.caption("The downloaded Monday-Sunday pattern includes a fixed 10% production increase.")
