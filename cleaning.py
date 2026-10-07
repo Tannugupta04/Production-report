@@ -13,6 +13,34 @@ import pandas as pd
 DB_PATH = Path("data/sales_dashboard.db")
 DASHBOARD_COLUMNS = "date, outlet, order_source, item_name, quantity, unit, net_sales, status, handler, weekday, month, analysis_quantity"
 DATE_FORMAT_MIGRATION = "sales_ddmmyyyy_2026_v2"
+OUTLET_CODES = {
+    "Aerocity": "AC",
+    "Aerocity Worldmark (S65)": "S65",
+    "Alpha-2": "ALP-2",
+    "Ansal": "ANS-Ansal",
+    "Chandigarh": "ELN",
+    "CHD-8": "CHD-8",
+    "Connaught Place": "CP",
+    "Cyber Hub": "CBH",
+    "DO-4": "DO-4",
+    "Dwarka (D12)": "D12",
+    "Galleria-1": "G1",
+    "Indirapuram": "IDP",
+    "Khan Market": "KM",
+    "Laxmi Nagar": "LXN",
+    "Logix Mall": "LGX",
+    "Ludhiana": "LDH",
+    "Mall of India": "MOI",
+    "Mohali": "CP67",
+    "Nehru Place": "NP",
+    "Pebble Mall": "PEB",
+    "Rajouri Garden": "RJG",
+    "Saket": "SKT",
+    "Suncity": "SUN",
+    "Tasting & Complimentry": "TAS-Complimentry",
+    "Tasting &amp; Complimentry": "TAS-Complimentry",
+    "Vasant Kunj": "VK",
+}
 
 # Standardises reporting names while preserving unlisted items.
 ALIASES = {
@@ -100,6 +128,13 @@ def normalise_names(series: pd.Series) -> pd.Series:
     cleaned = series.astype(str).str.strip().str.replace(r"\s+", " ", regex=True).str.rstrip(".")
     return cleaned.map(lambda value: _ALIASES_BY_KEY.get(_item_key(value), value))
 
+
+def normalise_outlets(series: pd.Series) -> pd.Series:
+    """Use the supplied outlet code for dispatch Transfer Location values."""
+    cleaned = series.fillna("").astype(str).str.strip()
+    outlet_keys = {_item_key(name): code for name, code in OUTLET_CODES.items()}
+    return cleaned.map(lambda value: outlet_keys.get(_item_key(value), value))
+
 def _base(raw: pd.DataFrame, quantity_column: str, status: str) -> pd.DataFrame:
     required = ["Branch Code", "Invoice Number", "Business Date", "Order Source", "Item Name", quantity_column, "Net Amount"]
     missing = [column for column in required if column not in raw.columns]
@@ -178,7 +213,7 @@ def clean_dispatch_upload(uploaded_file) -> pd.DataFrame:
     if missing: raise ValueError(f"Dispatch file is missing: {', '.join(missing)}")
     outlet_column = next((column for column in ("Transfer Location", "Outlet", "Outlet Name", "Branch", "Branch Name", "Branch Code") if column in raw.columns), None)
     data = raw[required].rename(columns={"Item Name": "item_name", "Quantity Delivered": "quantity_delivered", "Transfer Date": "transfer_date"}).copy()
-    data["outlet"] = raw[outlet_column].astype(str).str.strip() if outlet_column else ""
+    data["outlet"] = normalise_outlets(raw[outlet_column]) if outlet_column else ""
     data["source_item_name"] = data["item_name"].astype(str).str.strip()
     data["item_name"] = normalise_names(data["item_name"]); data["quantity_delivered"] = pd.to_numeric(data["quantity_delivered"], errors="coerce"); data["transfer_date"] = parse_business_dates(data["transfer_date"]).dt.normalize()
     data = data.dropna().loc[lambda frame: frame["quantity_delivered"].gt(0)].copy(); data["weekday"] = data["transfer_date"].dt.day_name(); data["week_start"] = data["transfer_date"] - pd.to_timedelta(data["transfer_date"].dt.dayofweek, unit="D")
@@ -419,7 +454,8 @@ def load_dispatch_data():
     if not loaded.empty:
         loaded["item_name"] = normalise_names(loaded["item_name"])
         loaded["handler"] = _handler(loaded)
-        loaded["outlet"] = loaded.get("outlet", "").fillna("").astype(str).str.strip().replace("", "Outlet not captured")
+        outlet_values = loaded["outlet"] if "outlet" in loaded.columns else pd.Series("", index=loaded.index)
+        loaded["outlet"] = normalise_outlets(outlet_values).replace("", "Outlet not captured")
         loaded = apply_item_uom(loaded)
     return loaded
 
