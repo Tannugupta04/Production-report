@@ -147,30 +147,29 @@ def download_sales_report(filtered, scope, start, end, statuses):
 
 
 def dispatch_outputs(data):
-    """Calculate the shared production benchmarks and Monday-Sunday median pattern."""
-    item_units = data[["item_name", "unit"]].drop_duplicates(subset=["item_name"])
-    daily = data.groupby(["transfer_date", "item_name", "weekday"], as_index=False).quantity_delivered.sum()
+    """Calculate P75 and weekday patterns independently for every outlet."""
+    item_units = data[["item_name", "outlet", "unit"]].drop_duplicates(subset=["item_name", "outlet"])
+    daily = data.groupby(["transfer_date", "outlet", "item_name", "weekday"], as_index=False).quantity_delivered.sum()
     weekly = (
         daily.assign(week_start=daily.transfer_date - pd.to_timedelta(daily.transfer_date.dt.dayofweek, unit="D"))
-        .groupby(["week_start", "item_name"], as_index=False).quantity_delivered.sum()
+        .groupby(["week_start", "outlet", "item_name"], as_index=False).quantity_delivered.sum()
         .rename(columns={"quantity_delivered": "Weekly Quantity"})
     )
-    benchmark = weekly.groupby("item_name")["Weekly Quantity"].agg(
+    benchmark = weekly.groupby(["outlet", "item_name"])["Weekly Quantity"].agg(
         Average_Weekly="mean", Median_Weekly="median", P75_Weekly=lambda values: values.quantile(.75),
         P90_Weekly=lambda values: values.quantile(.90), Min_Weekly="min", Max_Weekly="max",
     ).reset_index()
     benchmark["Recommended Weekly Production"] = np.ceil(benchmark.P75_Weekly * 1.10).astype(int)
-    benchmark = benchmark.merge(item_units, on="item_name", how="left")
-    benchmark = benchmark[["item_name", "unit", *[column for column in benchmark.columns if column not in {"item_name", "unit"}]]]
-    day_benchmark = daily.groupby(["item_name", "weekday"])["quantity_delivered"].agg(
+    benchmark = benchmark.merge(item_units, on=["outlet", "item_name"], how="left")
+    benchmark = benchmark[["item_name", "outlet", "unit", *[column for column in benchmark.columns if column not in {"item_name", "outlet", "unit"}]]]
+    day_benchmark = daily.groupby(["outlet", "item_name", "weekday"])["quantity_delivered"].agg(
         Average="mean", Median="median", P75=lambda values: values.quantile(.75), P90=lambda values: values.quantile(.90),
     ).reset_index()
     day_benchmark.weekday = pd.Categorical(day_benchmark.weekday, categories=WEEKDAYS, ordered=True)
-    day_benchmark = day_benchmark.merge(item_units, on="item_name", how="left").sort_values(["item_name", "weekday"])
-    day_benchmark = day_benchmark[["item_name", "unit", *[column for column in day_benchmark.columns if column not in {"item_name", "unit"}]]]
-    matrix = day_benchmark.pivot(index="item_name", columns="weekday", values="Median").reindex(columns=WEEKDAYS).reset_index()
-    matrix = matrix.merge(item_units, on="item_name", how="left")
-    matrix = matrix[["item_name", "unit", *WEEKDAYS]]
+    day_benchmark = day_benchmark.merge(item_units, on=["outlet", "item_name"], how="left").sort_values(["outlet", "item_name", "weekday"])
+    day_benchmark = day_benchmark[["item_name", "outlet", "unit", *[column for column in day_benchmark.columns if column not in {"item_name", "outlet", "unit"}]]]
+    matrix = day_benchmark.pivot(index=["item_name", "outlet", "unit"], columns="weekday", values="Median").reindex(columns=WEEKDAYS).reset_index()
+    matrix = matrix[["item_name", "outlet", "unit", *WEEKDAYS]]
     return benchmark, day_benchmark, matrix
 
 
@@ -335,10 +334,13 @@ def production_page():
         st.divider()
         st.caption("The downloaded Monday-Sunday pattern includes a fixed 10% production increase.")
         chosen = st.multiselect("Production item", sorted(data.item_name.unique()))
+        outlets = st.multiselect("Outlet", sorted(data.outlet.dropna().unique()), key="dispatch_outlets")
         st.header("Person segregation")
         handlers = st.multiselect("Handled by", sorted(data.handler.dropna().unique()), key="dispatch_handlers")
     if chosen:
         data = data[data.item_name.isin(chosen)]
+    if outlets:
+        data = data[data.outlet.isin(outlets)]
     if handlers:
         data = data[data.handler.isin(handlers)]
     if data.empty:
@@ -350,7 +352,7 @@ def production_page():
     for day, tab in zip(WEEKDAYS, st.tabs(WEEKDAYS)):
         with tab:
             view = day_benchmark[day_benchmark.weekday.eq(day)].sort_values("P75", ascending=False)
-            st.plotly_chart(px.bar(view, x="item_name", y="P75", title=f"{day} production benchmark (P75)").update_xaxes(tickangle=-45), width="stretch")
+            st.plotly_chart(px.bar(view, x="item_name", y="P75", color="outlet", title=f"{day} production benchmark (P75 by outlet)").update_xaxes(tickangle=-45), width="stretch")
             st.dataframe(view.round(2), hide_index=True, width="stretch")
     st.download_button("Download Monday-Sunday pattern (+10%)", download_pattern(matrix, 10), "monday_sunday_production_pattern_plus_10.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 

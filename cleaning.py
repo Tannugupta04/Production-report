@@ -52,7 +52,7 @@ def init_database() -> None:
         conn.execute("CREATE TABLE IF NOT EXISTS uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, sales_filename TEXT, cancel_filename TEXT, row_count INTEGER)")
         conn.execute("CREATE TABLE IF NOT EXISTS cleaned_transactions (batch_id TEXT, outlet TEXT, invoice TEXT, date TEXT, order_source TEXT, item_name TEXT, quantity REAL, unit TEXT, net_sales REAL, category TEXT, customer_name TEXT, customer_phone TEXT, status TEXT, hour REAL, handler TEXT, weekday TEXT, month TEXT, week_number INTEGER, sales_impact REAL, quantity_impact REAL)")
         conn.execute("CREATE TABLE IF NOT EXISTS dispatch_uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, filename TEXT, row_count INTEGER)")
-        conn.execute("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered REAL, weekday TEXT, week_start TEXT, handler TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered REAL, weekday TEXT, week_start TEXT, handler TEXT, outlet TEXT)")
         for column, definition in (("handler", "TEXT"), ("unit", "TEXT DEFAULT 'units'")):
             try:
                 conn.execute(f"ALTER TABLE cleaned_transactions ADD COLUMN {column} {definition}")
@@ -176,7 +176,9 @@ def clean_dispatch_upload(uploaded_file) -> pd.DataFrame:
     raw = read_uploaded_file(uploaded_file); required = ["Item Name", "Quantity Delivered", "Transfer Date"]
     missing = [column for column in required if column not in raw.columns]
     if missing: raise ValueError(f"Dispatch file is missing: {', '.join(missing)}")
+    outlet_column = next((column for column in ("Transfer Location", "Outlet", "Outlet Name", "Branch", "Branch Name", "Branch Code") if column in raw.columns), None)
     data = raw[required].rename(columns={"Item Name": "item_name", "Quantity Delivered": "quantity_delivered", "Transfer Date": "transfer_date"}).copy()
+    data["outlet"] = raw[outlet_column].fillna("").astype(str).str.strip() if outlet_column else ""
     data["source_item_name"] = data["item_name"].astype(str).str.strip()
     data["item_name"] = normalise_names(data["item_name"]); data["quantity_delivered"] = pd.to_numeric(data["quantity_delivered"], errors="coerce"); data["transfer_date"] = parse_business_dates(data["transfer_date"]).dt.normalize()
     data = data.dropna().loc[lambda frame: frame["quantity_delivered"].gt(0)].copy(); data["weekday"] = data["transfer_date"].dt.day_name(); data["week_start"] = data["transfer_date"] - pd.to_timedelta(data["transfer_date"].dt.dayofweek, unit="D")
@@ -187,8 +189,14 @@ def clean_dispatch_upload(uploaded_file) -> pd.DataFrame:
 def save_dispatch_batch(data: pd.DataFrame, uploaded_file) -> tuple[str, bool]:
     init_database(); batch_id = hashlib.sha256(uploaded_file.getvalue()).hexdigest()[:16]
     with _connect() as conn:
-        if conn.execute("SELECT 1 FROM dispatch_uploads WHERE batch_id = ?", (batch_id,)).fetchone(): return batch_id, False
-        conn.execute("INSERT INTO dispatch_uploads VALUES (?, ?, ?, ?)", (batch_id, datetime.now(timezone.utc).isoformat(), uploaded_file.name, len(data)))
+        existing = conn.execute("SELECT 1 FROM dispatch_uploads WHERE batch_id = ?", (batch_id,)).fetchone()
+        if existing:
+            has_outlet = conn.execute("SELECT 1 FROM cleaned_dispatch WHERE batch_id = ? AND outlet IS NOT NULL AND TRIM(outlet) <> '' LIMIT 1", (batch_id,)).fetchone()
+            if has_outlet: return batch_id, False
+            conn.execute("DELETE FROM cleaned_dispatch WHERE batch_id = ?", (batch_id,))
+            conn.execute("UPDATE dispatch_uploads SET uploaded_at = ?, filename = ?, row_count = ? WHERE batch_id = ?", (datetime.now(timezone.utc).isoformat(), uploaded_file.name, len(data), batch_id))
+        else:
+            conn.execute("INSERT INTO dispatch_uploads VALUES (?, ?, ?, ?)", (batch_id, datetime.now(timezone.utc).isoformat(), uploaded_file.name, len(data)))
         stored = data.drop(columns=["source_item_name"], errors="ignore").copy(); stored["batch_id"] = batch_id; stored["transfer_date"] = stored["transfer_date"].dt.strftime("%Y-%m-%d"); stored["week_start"] = stored["week_start"].dt.strftime("%Y-%m-%d")
         stored.to_sql("cleaned_dispatch", conn, if_exists="append", index=False)
     return batch_id, True
@@ -233,7 +241,7 @@ if _EXTERNAL_URL:
                 conn.execute(text("CREATE TABLE IF NOT EXISTS uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, sales_filename TEXT, cancel_filename TEXT, row_count INTEGER)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_transactions (batch_id TEXT, outlet TEXT, invoice TEXT, date TEXT, order_source TEXT, item_name TEXT, quantity DOUBLE PRECISION, unit TEXT, net_sales DOUBLE PRECISION, category TEXT, customer_name TEXT, customer_phone TEXT, status TEXT, hour DOUBLE PRECISION, handler TEXT, weekday TEXT, month TEXT, week_number INTEGER, sales_impact DOUBLE PRECISION, quantity_impact DOUBLE PRECISION)"))
                 conn.execute(text("CREATE TABLE IF NOT EXISTS dispatch_uploads (batch_id TEXT PRIMARY KEY, uploaded_at TEXT, filename TEXT, row_count INTEGER)"))
-                conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered DOUBLE PRECISION, weekday TEXT, week_start TEXT, handler TEXT)"))
+                conn.execute(text("CREATE TABLE IF NOT EXISTS cleaned_dispatch (batch_id TEXT, transfer_date TEXT, item_name TEXT, quantity_delivered DOUBLE PRECISION, weekday TEXT, week_start TEXT, handler TEXT, outlet TEXT)"))
         except OperationalError as error:
             provider_message = str(error).lower()
             if "password authentication failed" in provider_message:
@@ -270,8 +278,14 @@ if _EXTERNAL_URL:
     def save_dispatch_batch(data, uploaded_file):
         init_database(); batch_id = hashlib.sha256(uploaded_file.getvalue()).hexdigest()[:16]
         with _ENGINE.begin() as conn:
-            if conn.execute(text("SELECT 1 FROM dispatch_uploads WHERE batch_id = :id"), {"id": batch_id}).first(): return batch_id, False
-            conn.execute(text("INSERT INTO dispatch_uploads VALUES (:id, :time, :name, :rows)"), {"id": batch_id, "time": datetime.now(timezone.utc).isoformat(), "name": uploaded_file.name, "rows": len(data)})
+            existing = conn.execute(text("SELECT 1 FROM dispatch_uploads WHERE batch_id = :id"), {"id": batch_id}).first()
+            if existing:
+                has_outlet = conn.execute(text("SELECT 1 FROM cleaned_dispatch WHERE batch_id = :id AND outlet IS NOT NULL AND BTRIM(outlet) <> '' LIMIT 1"), {"id": batch_id}).first()
+                if has_outlet: return batch_id, False
+                conn.execute(text("DELETE FROM cleaned_dispatch WHERE batch_id = :id"), {"id": batch_id})
+                conn.execute(text("UPDATE dispatch_uploads SET uploaded_at = :time, filename = :name, row_count = :rows WHERE batch_id = :id"), {"id": batch_id, "time": datetime.now(timezone.utc).isoformat(), "name": uploaded_file.name, "rows": len(data)})
+            else:
+                conn.execute(text("INSERT INTO dispatch_uploads VALUES (:id, :time, :name, :rows)"), {"id": batch_id, "time": datetime.now(timezone.utc).isoformat(), "name": uploaded_file.name, "rows": len(data)})
             stored = data.drop(columns=["source_item_name"], errors="ignore").copy(); stored["batch_id"] = batch_id; stored["transfer_date"] = stored["transfer_date"].dt.strftime("%Y-%m-%d"); stored["week_start"] = stored["week_start"].dt.strftime("%Y-%m-%d")
             stored.to_sql("cleaned_dispatch", conn, if_exists="append", index=False)
         return batch_id, True
@@ -343,6 +357,7 @@ def init_database():
         with _ENGINE.begin() as conn:
             conn.execute(text("ALTER TABLE cleaned_transactions ADD COLUMN IF NOT EXISTS analysis_quantity DOUBLE PRECISION"))
             conn.execute(text("ALTER TABLE cleaned_dispatch ADD COLUMN IF NOT EXISTS handler TEXT"))
+            conn.execute(text("ALTER TABLE cleaned_dispatch ADD COLUMN IF NOT EXISTS outlet TEXT"))
             conn.execute(text("CREATE TABLE IF NOT EXISTS data_migrations (name TEXT PRIMARY KEY)"))
             applied = conn.execute(text("SELECT 1 FROM data_migrations WHERE name = :name"), {"name": DATE_FORMAT_MIGRATION}).first()
             if not applied:
@@ -362,6 +377,10 @@ def init_database():
                 pass
             try:
                 conn.execute("ALTER TABLE cleaned_dispatch ADD COLUMN handler TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE cleaned_dispatch ADD COLUMN outlet TEXT")
             except sqlite3.OperationalError:
                 pass
             conn.execute("CREATE TABLE IF NOT EXISTS data_migrations (name TEXT PRIMARY KEY)")
@@ -400,6 +419,7 @@ def load_dispatch_data():
     if not loaded.empty:
         loaded["item_name"] = normalise_names(loaded["item_name"])
         loaded["handler"] = _handler(loaded)
+        loaded["outlet"] = loaded.get("outlet", pd.Series("", index=loaded.index)).fillna("").astype(str).str.strip().replace("", "Outlet not captured")
         loaded = apply_item_uom(loaded)
     return loaded
 
