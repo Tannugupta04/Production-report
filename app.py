@@ -477,17 +477,29 @@ def summary_one_page():
     values = pattern[["item_name", "outlet", "unit", summary_day]].copy().rename(columns={"item_name": "Item name", "outlet": "Outlet", "unit": "UOM", summary_day: "Value"})
     values["Value"] = np.ceil(pd.to_numeric(values["Value"], errors="coerce").fillna(0) * (1 + adjustment_percent / 100)).astype(int)
 
-    production = values.pivot_table(index=["Item name", "UOM"], columns="Outlet", values="Value", aggfunc="sum", fill_value=0).reset_index()
-    production.columns.name = None
+    # Keep the outlet as a visible field instead of only using it as a pivoted
+    # heading. This makes it clear which quantity belongs to each outlet.
+    production = values.rename(columns={"Value": "Production"}).sort_values(["Item name", "Outlet"]).reset_index(drop=True)
     st.subheader("Production by outlet")
-    st.caption(f"{summary_day} production values, with {adjustment_percent:g}% adjustment. Items are rows; outlets are columns.")
-    st.dataframe(production, hide_index=True, width="stretch", height=520)
+    st.caption(f"{summary_day} production values, with {adjustment_percent:g}% adjustment. Each row is one item at one outlet.")
+    st.dataframe(
+        production,
+        hide_index=True,
+        width="stretch",
+        height=520,
+        column_config={"Production": st.column_config.NumberColumn("Production", format="%,d")},
+    )
 
-    dispatch_pivot = values.pivot_table(index=["Item name", "UOM"], columns="Outlet", values="Value", aggfunc="sum", fill_value=0).reset_index()
-    dispatch_pivot.columns.name = None
+    dispatch_table = values.rename(columns={"Value": "Dispatch"}).sort_values(["Item name", "Outlet"]).reset_index(drop=True)
     st.subheader("Dispatch by outlet")
-    st.caption(f"{summary_day} dispatch quantities using the current Monday-Sunday pattern logic. Items are rows; outlets are columns.")
-    st.dataframe(dispatch_pivot, hide_index=True, width="stretch", height=520)
+    st.caption(f"{summary_day} dispatch quantities using the current Monday-Sunday pattern logic. Each row is one item at one outlet.")
+    st.dataframe(
+        dispatch_table,
+        hide_index=True,
+        width="stretch",
+        height=520,
+        column_config={"Dispatch": st.column_config.NumberColumn("Dispatch", format="%,d")},
+    )
 
 
 page = st.sidebar.radio("Page", ["Sales dashboard", "Dispatch & production", "Summary", "Summary 1"])
